@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FileText, Search, Upload, Moon, Sun } from "lucide-react";
+import { FileText, Search, Upload, Moon, Sun, LogIn, LogOut } from "lucide-react";
 import { useAppStore } from "@/store/app-store";
+import { useAuth } from "@/lib/auth-context";
 import { useEffect } from "react";
 
 const navItems = [
@@ -15,6 +16,7 @@ const navItems = [
 export function Header() {
   const pathname = usePathname();
   const { darkMode, toggleDarkMode } = useAppStore();
+  const { user, logout } = useAuth();
 
   useEffect(() => {
     const stored = localStorage.getItem("darkMode");
@@ -64,6 +66,29 @@ export function Header() {
           >
             {darkMode ? <Sun size={18} /> : <Moon size={18} />}
           </button>
+
+          {user ? (
+            <div className="ml-2 flex items-center gap-2">
+              <span className="hidden text-xs text-neutral-500 dark:text-neutral-400 sm:inline">
+                {user.name || user.email}
+              </span>
+              <button
+                onClick={logout}
+                className="rounded-lg p-2 text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                aria-label="Sign out"
+              >
+                <LogOut size={16} />
+              </button>
+            </div>
+          ) : (
+            <Link
+              href="/login"
+              className="ml-2 flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            >
+              <LogIn size={16} />
+              <span className="hidden sm:inline">Sign In</span>
+            </Link>
+          )}
         </nav>
       </div>
     </header>

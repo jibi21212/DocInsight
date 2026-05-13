@@ -1,12 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["pdf-parse", "@xenova/transformers"],
-  experimental: {
-    serverActions: {
-      bodySizeLimit: "50mb",
-    },
-  },
+  /* Frontend-only Next.js app — backend is the Go server */
 };
 
 export default nextConfig;

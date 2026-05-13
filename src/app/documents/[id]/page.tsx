@@ -11,8 +11,9 @@ import {
   Hash,
 } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
+import { TagManager } from "@/components/tag-manager";
 import { fetchDocumentDetail } from "@/store/app-store";
-import type { Document, ChunkMetadata } from "@/lib/types";
+import type { Document, Tag, ChunkMetadata } from "@/lib/types";
 
 interface ChunkData {
   id: string;
@@ -50,6 +51,7 @@ export default function DocumentDetailPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedChunks, setExpandedChunks] = useState<Set<string>>(new Set());
+  const [tags, setTags] = useState<Tag[]>([]);
 
   useEffect(() => {
     async function load() {
@@ -144,6 +146,14 @@ export default function DocumentDetailPage({
                 <Hash size={14} />
                 {chunks.length} chunks
               </span>
+            </div>
+
+            <div className="mt-3">
+              <TagManager
+                documentId={id}
+                documentTags={tags}
+                onTagsChange={setTags}
+              />
             </div>
           </div>
         </div>

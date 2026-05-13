@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { Search, SlidersHorizontal, X } from "lucide-react";
+import type { SearchMode } from "@/lib/types";
 
 interface SearchBarProps {
-  onSearch: (query: string, topK: number, threshold: number) => void;
+  onSearch: (query: string, topK: number, threshold: number, searchMode: SearchMode) => void;
   loading?: boolean;
   initialQuery?: string;
 }
@@ -18,11 +19,12 @@ export function SearchBar({
   const [showFilters, setShowFilters] = useState(false);
   const [topK, setTopK] = useState(10);
   const [threshold, setThreshold] = useState(0.5);
+  const [searchMode, setSearchMode] = useState<SearchMode>("hybrid");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (query.trim()) {
-      onSearch(query.trim(), topK, threshold);
+      onSearch(query.trim(), topK, threshold, searchMode);
     }
   };
 
@@ -104,6 +106,20 @@ export function SearchBar({
               }
               className="w-24 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
             />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+              Search Mode
+            </label>
+            <select
+              value={searchMode}
+              onChange={(e) => setSearchMode(e.target.value as SearchMode)}
+              className="rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
+            >
+              <option value="hybrid">Hybrid</option>
+              <option value="semantic">Semantic</option>
+              <option value="keyword">Keyword</option>
+            </select>
           </div>
         </div>
       )}

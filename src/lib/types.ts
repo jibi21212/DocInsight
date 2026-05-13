@@ -9,6 +9,8 @@ export interface Document {
   file_path: string;
   file_size: number;
   error_message: string | null;
+  source_type: "pdf" | "web";
+  source_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -37,6 +39,8 @@ export interface Embedding {
   created_at: string;
 }
 
+export type SearchMode = "hybrid" | "semantic" | "keyword";
+
 export interface SearchResult {
   chunk_id: string;
   content: string;
@@ -46,6 +50,17 @@ export interface SearchResult {
   metadata: ChunkMetadata;
   document_id: string;
   document_name: string;
+  source_type: "pdf" | "web";
+  source_url: string | null;
+  match_type?: "semantic" | "keyword" | "hybrid";
+  keyword_score?: number;
+}
+
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
+  created_at: string;
 }
 
 export interface SearchRequest {
@@ -53,6 +68,7 @@ export interface SearchRequest {
   topK?: number;
   threshold?: number;
   documentIds?: string[];
+  searchMode?: SearchMode;
 }
 
 export interface SearchResponse {

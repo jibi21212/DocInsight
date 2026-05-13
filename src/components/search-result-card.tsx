@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { FileText, Hash } from "lucide-react";
+import { FileText, Globe, Hash } from "lucide-react";
 import type { SearchResult } from "@/lib/types";
 
 interface SearchResultCardProps {
@@ -45,6 +45,20 @@ function getSimilarityColor(score: number): string {
   return "text-neutral-500 dark:text-neutral-400";
 }
 
+function MatchTypeBadge({ type }: { type?: string }) {
+  if (!type) return null;
+  const styles: Record<string, string> = {
+    semantic: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-400",
+    keyword: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
+    hybrid: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400",
+  };
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${styles[type] ?? styles.semantic}`}>
+      {type.charAt(0).toUpperCase() + type.slice(1)}
+    </span>
+  );
+}
+
 export function SearchResultCard({
   result,
   index,
@@ -63,9 +77,15 @@ export function SearchResultCard({
             href={`/documents/${result.document_id}`}
             className="flex items-center gap-1.5 text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
           >
-            <FileText size={14} />
+            {result.source_type === "web" ? <Globe size={14} /> : <FileText size={14} />}
             {result.document_name}
           </Link>
+          {result.source_type === "web" && (
+            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+              Web
+            </span>
+          )}
+          <MatchTypeBadge type={result.match_type} />
         </div>
         <div className="flex items-center gap-3 text-xs">
           <span className="flex items-center gap-1 text-neutral-500 dark:text-neutral-400">

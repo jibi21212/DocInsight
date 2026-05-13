@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FileText, Trash2, Play, Calendar, HardDrive } from "lucide-react";
+import { FileText, Globe, Trash2, Play, RefreshCcw, Calendar, HardDrive } from "lucide-react";
 import { StatusBadge } from "./status-badge";
 import type { Document } from "@/lib/types";
 
@@ -9,6 +9,7 @@ interface DocumentCardProps {
   document: Document;
   onProcess: (id: string) => void;
   onDelete: (id: string) => void;
+  onRefresh?: (id: string) => void;
   processing?: boolean;
 }
 
@@ -32,6 +33,7 @@ export function DocumentCard({
   document,
   onProcess,
   onDelete,
+  onRefresh,
   processing,
 }: DocumentCardProps) {
   return (
@@ -41,8 +43,12 @@ export function DocumentCard({
           href={`/documents/${document.id}`}
           className="flex min-w-0 flex-1 items-start gap-3"
         >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
-            <FileText size={20} />
+          <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+            document.source_type === "web"
+              ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400"
+              : "bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400"
+          }`}>
+            {document.source_type === "web" ? <Globe size={20} /> : <FileText size={20} />}
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="truncate text-sm font-semibold text-neutral-900 group-hover:text-blue-600 dark:text-white dark:group-hover:text-blue-400">
@@ -60,7 +66,17 @@ export function DocumentCard({
               {document.page_count > 0 && (
                 <span>{document.page_count} pages</span>
               )}
+              {document.source_type === "web" && (
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+                  Web
+                </span>
+              )}
             </div>
+            {document.source_url && (
+              <p className="mt-1 truncate text-xs text-neutral-400 dark:text-neutral-500">
+                {document.source_url}
+              </p>
+            )}
           </div>
         </Link>
         <StatusBadge status={document.status} />
@@ -81,6 +97,15 @@ export function DocumentCard({
           >
             <Play size={12} />
             {document.status === "failed" ? "Retry" : "Process"}
+          </button>
+        )}
+        {document.source_type === "web" && onRefresh && document.status !== "processing" && (
+          <button
+            onClick={() => onRefresh(document.id)}
+            className="flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-600 transition-colors hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-900/20"
+          >
+            <RefreshCcw size={12} />
+            Refresh
           </button>
         )}
         <button

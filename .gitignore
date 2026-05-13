@@ -1,6 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
+# ========================
+# Node.js / Next.js
+# ========================
 /node_modules
 /.pnp
 .pnp.*
@@ -9,36 +11,81 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-
-# testing
-/coverage
-
-# next.js
 /.next/
 /out/
-
-# production
 /build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
+/coverage
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-
-# uploads
-/uploads
-
-# vercel
-.vercel
-
-# typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ========================
+# Python (embedding sidecar)
+# ========================
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+backend/embedding-sidecar/.venv/
+backend/embedding-sidecar/venv/
+
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Distribution / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+lib/
+lib64/
+.installed.cfg
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ========================
+# Go backend
+# ========================
+/backend/bin/
+/backend/server.exe
+/backend/*.db
+/backend/*.db-wal
+/backend/*.db-shm
+
+# ========================
+# Uploads & data
+# ========================
+/uploads
+/backend/uploads
+
+# ========================
+# Environment files
+# ========================
+.env*
+
+# ========================
+# OS & editor artifacts
+# ========================
+.DS_Store
+Thumbs.db
+*.pem
+.vercel

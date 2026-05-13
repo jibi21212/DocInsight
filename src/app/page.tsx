@@ -11,10 +11,12 @@ import {
   fetchDocuments,
   processDocument,
   deleteDocument,
+  refreshDocument,
   searchDocuments,
 } from "@/store/app-store";
 import { SearchResultCard } from "@/components/search-result-card";
-import type { SearchResult } from "@/lib/types";
+import { ExportToolbar } from "@/components/export-toolbar";
+import type { SearchResult, SearchMode } from "@/lib/types";
 
 export default function DashboardPage() {
   const {
@@ -80,15 +82,26 @@ export default function DashboardPage() {
     }
   };
 
+  const handleRefresh = async (id: string) => {
+    updateDocumentStatus(id, "processing");
+    try {
+      await refreshDocument(id);
+    } catch (err) {
+      console.error("Refresh failed:", err);
+      updateDocumentStatus(id, "failed", String(err));
+    }
+  };
+
   const handleSearch = async (
     query: string,
     topK: number,
-    threshold: number
+    threshold: number,
+    searchMode?: SearchMode
   ) => {
     setSearchLoading(true);
     setSearchQuery(query);
     try {
-      const res = await searchDocuments(query, topK, threshold);
+      const res = await searchDocuments(query, topK, threshold, undefined, searchMode);
       setSearchResults(res.results);
       setSearchTookMs(res.took_ms);
     } catch (err) {
@@ -175,15 +188,18 @@ export default function DashboardPage() {
               <p className="text-sm text-neutral-500 dark:text-neutral-400">
                 {searchResults.length} results in {searchTookMs}ms
               </p>
-              <button
-                onClick={() => {
-                  setSearchResults([]);
-                  setSearchQuery("");
-                }}
-                className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-              >
-                Clear results
-              </button>
+              <div className="flex items-center gap-3">
+                <ExportToolbar results={searchResults} query={searchQuery} />
+                <button
+                  onClick={() => {
+                    setSearchResults([]);
+                    setSearchQuery("");
+                  }}
+                  className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  Clear results
+                </button>
+              </div>
             </div>
             {searchResults.map((result, i) => (
               <SearchResultCard
@@ -220,8 +236,8 @@ export default function DashboardPage() {
           <EmptyState
             icon={FileText}
             title="No documents yet"
-            description="Upload your first PDF document to get started with semantic search."
-            actionLabel="Upload Document"
+            description="Upload a PDF or add web page URLs to get started with semantic search."
+            actionLabel="Add Content"
             actionHref="/upload"
           />
         ) : (
@@ -232,6 +248,7 @@ export default function DashboardPage() {
                 document={doc}
                 onProcess={handleProcess}
                 onDelete={handleDelete}
+                onRefresh={handleRefresh}
                 processing={processingIds.has(doc.id)}
               />
             ))}
