@@ -170,7 +170,7 @@ Run all: `go test ./... -timeout 60s`
 - [ ] Retry goroutines during processor backoff are not tracked — potential leak on shutdown
 - [ ] No upper bound on `pageSize` query param (could request huge pages)
 - [ ] `process.go` response uses camelCase `documentId` while models use snake_case `document_id`
-- [ ] Frontend integration testing (does the React app talk to Go correctly?)
+- [x] Frontend integration testing (does the React app talk to Go correctly?) — verified via E2E test suites
 - [ ] PostgreSQL `match_embeddings` RPC function not yet updated for `source_type`/`source_url` fields
 
 ---
@@ -217,3 +217,30 @@ Key files and what they do:
 | `src/components/export-toolbar.tsx` | JSON/CSV export for search results |
 | `src/app/login/page.tsx` | Login/registration page |
 | `.env.local` | `NEXT_PUBLIC_API_URL=http://localhost:8080` |
+| `.claude/launch.json` | MCP preview server configs (frontend + backend) |
+| `e2e/reset-test-db.sh` | Test environment reset script |
+| `e2e/E2E_TEST_PLAN.md` | E2E test playbook (9 suites, Claude-executable) |
+
+---
+
+## E2E Testing
+
+### Setup
+- Uses **Claude Preview MCP tools** (`preview_start`, `preview_snapshot`, `preview_click`, `preview_fill`, `preview_eval`, `preview_logs`, `preview_network`) — no npm test dependencies
+- Backend started via Bash (`go build` + background process), not MCP `preview_start` (WSL bash conflict on Windows)
+- `.claude/launch.json` defines frontend (npm run dev, port 3000) and backend (Git Bash + Go, port 8080) configs
+- Backend logs captured to `test-logs/backend.log` via `tee` and verified with `grep`
+
+### Bug Found During E2E: chi middleware ordering
+- **File:** `backend/internal/server/routes.go`
+- **Bug:** `r.Get("/health", ...)` was defined before `r.Use(handler.AuthMiddleware(...))`. chi panics with `"all middlewares must be defined before routes on a mux"`.
+- **Fix:** Moved all `r.Use()` calls above the first route definition.
+- **Lesson:** In chi, `Use()` MUST come before any `Get()`/`Post()`/`Route()` calls on the same mux. Unlike Express.js, chi enforces this at runtime with a panic.
+
+### Key E2E Findings
+- All 9 suites pass (startup, dashboard, upload, search, doc detail, navigation, login, SSE, responsive)
+- Backend: 0 ERROR-level logs, 0 5xx responses across 33 log lines
+- Frontend: only stale "Failed to fetch" errors from before backend was started (expected)
+- SSE connections log `status=0` — correct for long-lived streaming connections
+- Auth `/api/auth/me` returns 401 before login (expected, no token)
+- Registration creates `di_`-prefixed API key, header updates to show user name

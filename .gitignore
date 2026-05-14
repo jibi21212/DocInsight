@@ -89,3 +89,10 @@ htmlcov/
 Thumbs.db
 *.pem
 .vercel
+
+# ========================
+# E2E testing
+# ========================
+test-logs/
+docinsight.db
+backend/docinsight.db

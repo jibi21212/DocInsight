@@ -17,20 +17,18 @@ import (
 func NewRouter(s store.Store, emb embedder.Embedder, scr scraper.Scraper, broker *events.Broker, q *queue.Queue, cfg *config.Config) http.Handler {
 	r := chi.NewRouter()
 
-	// Middleware
+	// Middleware (all Use() calls must come before any route definitions)
 	r.Use(handler.CORSMiddleware(cfg.CORSOrigin))
 	r.Use(handler.LoggingMiddleware)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
+	r.Use(handler.AuthMiddleware(s, cfg.AuthEnabled))
 
-	// Health check
+	// Health check (outside /api group, no auth required)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
-
-	// Auth middleware (no-op when AUTH_ENABLED=false)
-	r.Use(handler.AuthMiddleware(s, cfg.AuthEnabled))
 
 	// Document handlers
 	docHandler := handler.NewDocumentHandler(s, cfg)
