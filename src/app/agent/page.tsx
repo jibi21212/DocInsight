@@ -21,6 +21,7 @@ import {
 import { getLLMKey, hasAnyLLMKey } from "@/lib/llm-key-storage";
 import { SettingsLLMKeys } from "@/components/settings-llm-keys";
 import { AgentMessageView } from "@/components/agent-message";
+import { MicButton } from "@/components/mic-button";
 import type {
   AgentSession,
   AgentMessage,
@@ -326,6 +327,13 @@ export default function AgentPage() {
                 placeholder="Ask about your documents…"
                 disabled={sending}
                 className="flex-1 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
+              />
+              <MicButton
+                onTranscript={(text) =>
+                  setInput((prev) => (prev ? prev + " " + text : text))
+                }
+                disabled={sending}
+                size={16}
               />
               <button
                 type="submit"

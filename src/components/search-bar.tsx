@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Search, SlidersHorizontal, X } from "lucide-react";
 import type { SearchMode } from "@/lib/types";
+import { MicButton } from "@/components/mic-button";
 
 interface SearchBarProps {
   onSearch: (query: string, topK: number, threshold: number, searchMode: SearchMode) => void;
@@ -27,6 +28,10 @@ export function SearchBar({
       onSearch(query.trim(), topK, threshold, searchMode);
     }
   };
+
+  const handleTranscript = useCallback((text: string) => {
+    setQuery((prev) => (prev ? prev + " " + text : text));
+  }, []);
 
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
@@ -53,6 +58,8 @@ export function SearchBar({
             </button>
           )}
         </div>
+
+        <MicButton onTranscript={handleTranscript} disabled={loading} />
 
         <button
           type="button"
