@@ -313,3 +313,61 @@ Key files and what they do:
 | `src/components/agent-message.tsx` | Renders `<cite chunk="..."/>` markers as numbered superscripts with expandable source list |
 | `src/app/agent/page.tsx` | Full agent chat UI (sessions sidebar + streaming message thread) |
 
+---
+
+## Spinoff: docinsight-cli (2026-05-14)
+
+A separate repo `C:\Users\jibkh\Personal_Projects\docinsight-cli\` indexes
+git repos for semantic code search and exposes an **MCP stdio server** for
+AI CLI agents (Claude Code, Codex, Copilot CLI).
+
+**Patterns reused from DocInsight:**
+- modernc/sqlite + FTS5 + brute-force cosine in Go
+- RRF hybrid fusion at k=60
+- BYO API-key model (key in env / per-request header; never persisted)
+- Stopword-aware query tokenization for snippets/baseline
+
+**Code NOT reused** — too tightly coupled to the document/HTTP-sidecar
+world:
+- DocInsight chunker is PDF-page-aware; CLI chunker is symbol-aware
+  (Go `go/parser` for `.go` files, line-window fallback for others)
+- DocInsight embedder is an HTTP client to a Python sidecar; CLI embedder
+  is an in-process OpenAI client
+- DocInsight schema is user/folder-indexed; CLI schema is branch-indexed
+
+**Headline metric: token efficiency for AI agents.** Claim: a single
+`semantic_search_code` MCP call (~2–3 KB out) replaces 5–10 grep + read
+iterations (~20–50 KB) — measurable as a 10–25× reduction. The CLI ships
+with a Phase 7.5 eval framework (`docinsight-cli eval`) that computes
+Precision@1/3/5 + output bytes per query against a labeled benchmark
+([`docinsight-cli/eval/queries.jsonl`](../docinsight-cli/eval/queries.jsonl)
+is a 25-query benchmark targeting **this** DocInsight repo).
+
+See [`../docinsight-cli/LESSONS_LEARNED.md`](../docinsight-cli/LESSONS_LEARNED.md)
+for CLI-specific gotchas (MCP notification handling, FTS5 sync triggers,
+modernc/sqlite quirks, etc.).
+
+### MCP wire-up
+
+To use the CLI against this repo, from this directory:
+```bash
+cd ../docinsight-cli && go install ./cmd/docinsight-cli
+cd -                   # back to DocInsight
+docinsight-cli init    # one-time per repo
+OPENAI_API_KEY=sk-... docinsight-cli index
+```
+Then add to `.claude/mcp.json` here:
+```jsonc
+{
+  "mcpServers": {
+    "code-search": {
+      "command": "docinsight-cli",
+      "args": ["mcp"],
+      "env": { "OPENAI_API_KEY": "sk-..." }
+    }
+  }
+}
+```
+Claude Code will then call `semantic_search_code(query)` instead of running
+its own grep loops, surfacing ranked chunks from this codebase.
+
