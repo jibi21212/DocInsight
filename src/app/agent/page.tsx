@@ -22,6 +22,7 @@ import { getLLMKey, hasAnyLLMKey } from "@/lib/llm-key-storage";
 import { SettingsLLMKeys } from "@/components/settings-llm-keys";
 import { AgentMessageView } from "@/components/agent-message";
 import { MicButton } from "@/components/mic-button";
+import { ToolStatus } from "@/components/tool-status";
 import type {
   AgentSession,
   AgentMessage,
@@ -52,6 +53,9 @@ export default function AgentPage() {
   const [sending, setSending] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [streamingCitations, setStreamingCitations] = useState<Citation[]>([]);
+  const [streamingTools, setStreamingTools] = useState<
+    { name: string; label: string; done: boolean }[]
+  >([]);
   const [showSettings, setShowSettings] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,9 +110,25 @@ export default function AgentPage() {
       if (event.type === "agent.delta") {
         const text = (event.data["text"] as string) ?? "";
         setStreamingText((prev) => prev + text);
+      } else if (event.type === "agent.tool_call") {
+        const name = (event.data["name"] as string) ?? "tool";
+        const label =
+          (event.data["display_label"] as string) ?? `Using ${name}…`;
+        setStreamingTools((prev) => [...prev, { name, label, done: false }]);
       } else if (event.type === "agent.tool_result") {
         const cits = (event.data["citations"] as Citation[]) ?? [];
         setStreamingCitations((prev) => [...prev, ...cits]);
+        // Mark the most recent in-flight tool entry as done.
+        setStreamingTools((prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (!prev[i].done) {
+              const next = prev.slice();
+              next[i] = { ...next[i], done: true };
+              return next;
+            }
+          }
+          return prev;
+        });
       } else if (event.type === "agent.complete") {
         // Reload the messages from the server to capture the persisted assistant message
         fetchAgentMessages(selectedSession.id)
@@ -116,11 +136,13 @@ export default function AgentPage() {
           .catch(() => {});
         setStreamingText("");
         setStreamingCitations([]);
+        setStreamingTools([]);
         setSending(false);
       } else if (event.type === "agent.error") {
         setError(String(event.data["error"] ?? "Agent error"));
         setStreamingText("");
         setStreamingCitations([]);
+        setStreamingTools([]);
         setSending(false);
       }
     },
@@ -291,6 +313,9 @@ export default function AgentPage() {
               {messages.map((m) => (
                 <AgentMessageView key={m.id} message={m} />
               ))}
+              {streamingTools.length > 0 && (
+                <ToolStatus tools={streamingTools} />
+              )}
               {streamingText && (
                 <AgentMessageView
                   message={{
@@ -303,7 +328,7 @@ export default function AgentPage() {
                   }}
                 />
               )}
-              {sending && !streamingText && (
+              {sending && !streamingText && streamingTools.length === 0 && (
                 <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
                   <div className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
                   Thinking…
