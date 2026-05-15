@@ -253,6 +253,30 @@ func (s *PostgresStore) GetChunksByDocumentID(ctx context.Context, documentID uu
 	return chunks, rows.Err()
 }
 
+// GetChunkByID returns a single chunk by ID, scoped to the owning user when
+// provided. Returns (nil, nil) when the chunk does not exist or is not visible.
+func (s *PostgresStore) GetChunkByID(ctx context.Context, chunkID uuid.UUID, userID *uuid.UUID) (*model.Chunk, error) {
+	var c model.Chunk
+	var metaJSON []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT c.id, c.document_id, c.content, c.page_number, c.chunk_index, c.metadata, c.created_at
+		 FROM chunks c
+		 JOIN documents d ON c.document_id = d.id
+		 WHERE c.id = $1 AND ($2::uuid IS NULL OR d.user_id = $2)`,
+		chunkID, userID,
+	).Scan(&c.ID, &c.DocumentID, &c.Content, &c.PageNumber, &c.ChunkIndex, &metaJSON, &c.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(metaJSON, &c.Metadata); err != nil {
+		return nil, fmt.Errorf("unmarshal chunk metadata: %w", err)
+	}
+	return &c, nil
+}
+
 func (s *PostgresStore) DeleteChunksByDocumentID(ctx context.Context, documentID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM chunks WHERE document_id = $1`, documentID)
 	return err

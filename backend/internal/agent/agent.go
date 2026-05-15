@@ -111,11 +111,8 @@ func (a *Agent) Run(ctx context.Context, in RunInput) (*model.AgentMessage, erro
 		client = c
 	}
 
-	tools := []llm.Tool{{
-		Name:        SearchToolName,
-		Description: "Search the user's document library and return the most relevant chunks.",
-		InputSchema: searchToolSchema,
-	}}
+	dispatcher := NewToolDispatcher(a.Store, client, a.Embedder)
+	tools := dispatcher.Specs()
 
 	// Build LLM message list from history + user message.
 	llmMessages := make([]llm.Message, 0, len(in.History)+1)
@@ -173,60 +170,37 @@ func (a *Agent) Run(ctx context.Context, in RunInput) (*model.AgentMessage, erro
 			ToolCalls: iterToolCalls,
 		})
 
-		// Execute each tool call.
+		// Execute each tool call via the dispatcher.
 		for _, tc := range iterToolCalls {
-			if tc.Name != SearchToolName {
-				toolResult := fmt.Sprintf(`{"error":"unknown tool: %s"}`, tc.Name)
-				llmMessages = append(llmMessages, llm.Message{
-					Role:       "tool",
-					Content:    toolResult,
-					ToolCallID: tc.ID,
-				})
-				continue
-			}
-
-			var args struct {
-				Query string `json:"query"`
-				TopK  int    `json:"top_k"`
-			}
-			if err := json.Unmarshal(tc.Args, &args); err != nil {
-				toolResult := fmt.Sprintf(`{"error":"invalid args: %s"}`, err.Error())
-				llmMessages = append(llmMessages, llm.Message{
-					Role: "tool", Content: toolResult, ToolCallID: tc.ID,
-				})
-				continue
-			}
-			if args.TopK <= 0 {
-				args.TopK = 5
-			}
-
 			publish("agent.tool_call", map[string]any{
-				"name": tc.Name,
-				"args": json.RawMessage(tc.Args),
+				"name":          tc.Name,
+				"args":          json.RawMessage(tc.Args),
+				"display_label": toolCallStartLabel(tc),
 			})
 
-			results, citations, toolErr := a.runSearch(ctx, in.Session, args.Query, args.TopK)
-			if toolErr != nil {
-				toolResult := fmt.Sprintf(`{"error":"%s"}`, toolErr.Error())
+			resultJSON, toolCitations, displayLabel, dispatchErr := dispatcher.Dispatch(ctx, in.Session, tc, in.APIKey)
+			if dispatchErr != nil {
+				toolResult := fmt.Sprintf(`{"error":%q}`, dispatchErr.Error())
 				llmMessages = append(llmMessages, llm.Message{
 					Role: "tool", Content: toolResult, ToolCallID: tc.ID,
 				})
 				continue
 			}
 
-			// Stash citations.
-			for _, c := range citations {
+			// Stash citations harvested by tools that produce them.
+			for _, c := range toolCitations {
 				citationMap[c.ChunkID] = c
 			}
 
 			publish("agent.tool_result", map[string]any{
-				"citations": citations,
+				"name":          tc.Name,
+				"citations":     toolCitations,
+				"display_label": displayLabel,
 			})
 
-			payload, _ := json.Marshal(results)
 			llmMessages = append(llmMessages, llm.Message{
 				Role:       "tool",
-				Content:    string(payload),
+				Content:    resultJSON,
 				ToolCallID: tc.ID,
 			})
 		}
@@ -267,45 +241,30 @@ type searchResultItem struct {
 	Score        float64 `json:"score"`
 }
 
-func (a *Agent) runSearch(ctx context.Context, session *model.AgentSession, query string, topK int) ([]searchResultItem, []model.Citation, error) {
-	embs, err := a.Embedder.Embed(ctx, []string{query})
-	if err != nil {
-		return nil, nil, fmt.Errorf("embed: %w", err)
-	}
-	if len(embs) == 0 {
-		return nil, nil, fmt.Errorf("empty embedding")
-	}
-
-	results, err := a.Store.HybridSearch(ctx, embs[0], query, 0.0, topK, nil, &session.UserID, session.FolderID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("search: %w", err)
-	}
-
-	items := make([]searchResultItem, 0, len(results))
-	citations := make([]model.Citation, 0, len(results))
-	for _, r := range results {
-		snippet := r.Content
-		if len(snippet) > SnippetMaxLen {
-			snippet = snippet[:SnippetMaxLen]
+// toolCallStartLabel returns a best-effort "starting work" label for the UI
+// derived from the tool call's name and args. The richer post-execution label
+// is produced by the dispatcher and surfaced in agent.tool_result.
+func toolCallStartLabel(tc llm.ToolCall) string {
+	switch tc.Name {
+	case ToolSearchDocuments:
+		var args struct {
+			Query string `json:"query"`
 		}
-		items = append(items, searchResultItem{
-			ChunkID:      r.ChunkID.String(),
-			DocumentID:   r.DocumentID.String(),
-			DocumentName: r.DocumentName,
-			Snippet:      snippet,
-			PageNumber:   r.PageNumber,
-			Score:        r.Similarity,
-		})
-		citations = append(citations, model.Citation{
-			ChunkID:      r.ChunkID,
-			DocumentID:   r.DocumentID,
-			DocumentName: r.DocumentName,
-			Snippet:      snippet,
-			PageNumber:   r.PageNumber,
-			Score:        r.Similarity,
-		})
+		if json.Unmarshal(tc.Args, &args) == nil && args.Query != "" {
+			return fmt.Sprintf("Searching for %q", args.Query)
+		}
+		return "Searching"
+	case ToolGetDocument:
+		return "Reading document"
+	case ToolSummarizeDocument:
+		return "Summarizing document"
+	case ToolListDocuments:
+		return "Listing documents"
+	case ToolGetChunkContext:
+		return "Expanding context"
+	default:
+		return tc.Name
 	}
-	return items, citations, nil
 }
 
 // extractCitations returns citations whose chunk_id appears in <cite chunk=".../> markers.

@@ -265,7 +265,7 @@ func (s *SQLiteStore) Close() {
 // --- Documents ---
 
 // userIDStringOrEmpty returns user.String() if non-nil, "" otherwise.
-// Used for the AND (user_id = ? OR ? = '') pattern that no-ops when filter is absent.
+// Used for the AND (user_id = ? OR ? = ”) pattern that no-ops when filter is absent.
 func userIDStringOrEmpty(userID *uuid.UUID) string {
 	if userID == nil {
 		return ""
@@ -556,6 +556,33 @@ func (s *SQLiteStore) GetChunksByDocumentID(ctx context.Context, documentID uuid
 	}
 
 	return chunks, rows.Err()
+}
+
+// GetChunkByID returns a single chunk by ID. When userID is non-nil, the
+// chunk is only returned if its parent document is owned by that user.
+// Returns (nil, nil) when the chunk does not exist or is not visible.
+func (s *SQLiteStore) GetChunkByID(ctx context.Context, chunkID uuid.UUID, userID *uuid.UUID) (*model.Chunk, error) {
+	uidFilter := userIDStringOrEmpty(userID)
+	var c model.Chunk
+	var idStr, docIDStr, metaStr, createdAt string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT c.id, c.document_id, c.content, c.page_number, c.chunk_index, c.metadata, c.created_at
+		 FROM chunks c
+		 JOIN documents d ON c.document_id = d.id
+		 WHERE c.id = ? AND (d.user_id = ? OR ? = '')`,
+		chunkID.String(), uidFilter, uidFilter,
+	).Scan(&idStr, &docIDStr, &c.Content, &c.PageNumber, &c.ChunkIndex, &metaStr, &createdAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.ID, _ = uuid.Parse(idStr)
+	c.DocumentID, _ = uuid.Parse(docIDStr)
+	c.CreatedAt = parseTime(createdAt)
+	json.Unmarshal([]byte(metaStr), &c.Metadata)
+	return &c, nil
 }
 
 func (s *SQLiteStore) DeleteChunksByDocumentID(ctx context.Context, documentID uuid.UUID) error {

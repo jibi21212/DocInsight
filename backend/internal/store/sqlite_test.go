@@ -1551,3 +1551,90 @@ func TestHybridSearch_FolderScoped(t *testing.T) {
 		t.Errorf("expected chunkIn in results, got %v", results[0].ChunkID)
 	}
 }
+
+// --- GetChunkByID ---
+
+func TestGetChunkByID_HappyPath(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	userID := uuid.New()
+	if err := s.CreateUser(ctx, &model.User{ID: userID, Email: "gcid@example.com", APIKey: "di_gcid", Name: "u"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	docID := uuid.New()
+	if err := s.InsertDocument(ctx, &model.Document{ID: docID, Name: "d.pdf", FilePath: "/tmp/d.pdf", FileSize: 1, Status: model.StatusCompleted, UserID: &userID}, &userID); err != nil {
+		t.Fatalf("InsertDocument: %v", err)
+	}
+	chunkID := uuid.New()
+	if _, err := s.InsertChunks(ctx, []model.Chunk{{ID: chunkID, DocumentID: docID, Content: "hello", PageNumber: 1, ChunkIndex: 0}}); err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
+
+	c, err := s.GetChunkByID(ctx, chunkID, &userID)
+	if err != nil {
+		t.Fatalf("GetChunkByID: %v", err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil chunk")
+	}
+	if c.ID != chunkID {
+		t.Errorf("ID = %v, want %v", c.ID, chunkID)
+	}
+	if c.Content != "hello" {
+		t.Errorf("Content = %q, want %q", c.Content, "hello")
+	}
+	if c.DocumentID != docID {
+		t.Errorf("DocumentID = %v, want %v", c.DocumentID, docID)
+	}
+}
+
+func TestGetChunkByID_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	c, err := s.GetChunkByID(context.Background(), uuid.New(), nil)
+	if err != nil {
+		t.Fatalf("GetChunkByID should not error for missing chunk: %v", err)
+	}
+	if c != nil {
+		t.Errorf("expected nil for non-existent chunk")
+	}
+}
+
+func TestGetChunkByID_WrongUser(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	owner := uuid.New()
+	intruder := uuid.New()
+	if err := s.CreateUser(ctx, &model.User{ID: owner, Email: "gcio@example.com", APIKey: "di_gcio", Name: "o"}); err != nil {
+		t.Fatalf("CreateUser owner: %v", err)
+	}
+	if err := s.CreateUser(ctx, &model.User{ID: intruder, Email: "gcii@example.com", APIKey: "di_gcii", Name: "i"}); err != nil {
+		t.Fatalf("CreateUser intruder: %v", err)
+	}
+	docID := uuid.New()
+	if err := s.InsertDocument(ctx, &model.Document{ID: docID, Name: "d.pdf", FilePath: "/tmp/d.pdf", FileSize: 1, Status: model.StatusCompleted, UserID: &owner}, &owner); err != nil {
+		t.Fatalf("InsertDocument: %v", err)
+	}
+	chunkID := uuid.New()
+	if _, err := s.InsertChunks(ctx, []model.Chunk{{ID: chunkID, DocumentID: docID, Content: "secret", PageNumber: 1, ChunkIndex: 0}}); err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
+
+	c, err := s.GetChunkByID(ctx, chunkID, &intruder)
+	if err != nil {
+		t.Fatalf("GetChunkByID: %v", err)
+	}
+	if c != nil {
+		t.Errorf("intruder should not see chunk; got %+v", c)
+	}
+
+	// Sanity: the owner still does see it.
+	c, err = s.GetChunkByID(ctx, chunkID, &owner)
+	if err != nil {
+		t.Fatalf("GetChunkByID for owner: %v", err)
+	}
+	if c == nil {
+		t.Fatal("owner should see their own chunk")
+	}
+}

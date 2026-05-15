@@ -19,6 +19,7 @@ type Store interface {
 	// Chunks
 	InsertChunks(ctx context.Context, chunks []model.Chunk) ([]uuid.UUID, error)
 	GetChunksByDocumentID(ctx context.Context, documentID uuid.UUID) ([]model.Chunk, error)
+	GetChunkByID(ctx context.Context, chunkID uuid.UUID, userID *uuid.UUID) (*model.Chunk, error)
 	DeleteChunksByDocumentID(ctx context.Context, documentID uuid.UUID) error
 
 	// Embeddings

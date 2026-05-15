@@ -325,6 +325,173 @@ func TestRun_CitationExtraction(t *testing.T) {
 	}
 }
 
+func TestAgent_MultiToolFlow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	userID := uuid.New()
+
+	// Seed a user and a multi-chunk document so search → context expansion has
+	// real data to walk through.
+	user := &model.User{ID: userID, Email: "multi@example.com", APIKey: "di_multi", Name: "multi user"}
+	if err := s.CreateUser(ctx, user); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	docID := uuid.New()
+	if err := s.InsertDocument(ctx, &model.Document{
+		ID: docID, Name: "research.pdf", FilePath: "/tmp/research.pdf", FileSize: 100,
+		Status: model.StatusCompleted, UserID: &userID,
+	}, &userID); err != nil {
+		t.Fatalf("InsertDocument: %v", err)
+	}
+	emb := []float32{1, 0, 0, 0}
+	chunks := make([]model.Chunk, 5)
+	chunkIDs := make([]uuid.UUID, 5)
+	for i := range chunks {
+		chunkIDs[i] = uuid.New()
+		chunks[i] = model.Chunk{
+			ID:         chunkIDs[i],
+			DocumentID: docID,
+			Content:    fmt.Sprintf("body %d about widgets", i),
+			PageNumber: 1,
+			ChunkIndex: i,
+		}
+	}
+	if _, err := s.InsertChunks(ctx, chunks); err != nil {
+		t.Fatalf("InsertChunks: %v", err)
+	}
+	embs := make([][]float32, 5)
+	for i := range embs {
+		embs[i] = emb
+	}
+	if err := s.InsertEmbeddings(ctx, chunkIDs, embs); err != nil {
+		t.Fatalf("InsertEmbeddings: %v", err)
+	}
+
+	sess := newSession(userID, nil)
+	if err := s.CreateAgentSession(ctx, sess); err != nil {
+		t.Fatalf("CreateAgentSession: %v", err)
+	}
+
+	// Hit chunk index 2 — get_chunk_context (default window 3) will return
+	// indices 0..4. We cite chunkIDs[2] in the final answer.
+	hit := chunkIDs[2]
+
+	llmMock := &scriptedLLM{
+		scripts: [][]llm.StreamEvent{
+			// 1) Main loop iter 1: ask for search_documents.
+			{
+				{Type: llm.StreamToolCall, ToolCall: &llm.ToolCall{
+					ID: "t-search", Name: ToolSearchDocuments, Args: json.RawMessage(`{"query":"widgets"}`),
+				}},
+				{Type: llm.StreamDone},
+			},
+			// 2) Main loop iter 2: ask for get_chunk_context on the focal chunk.
+			{
+				{Type: llm.StreamToolCall, ToolCall: &llm.ToolCall{
+					ID: "t-ctx", Name: ToolGetChunkContext, Args: json.RawMessage(fmt.Sprintf(`{"chunk_id":%q}`, hit.String())),
+				}},
+				{Type: llm.StreamDone},
+			},
+			// 3) Main loop iter 3: ask for summarize_document.
+			{
+				{Type: llm.StreamToolCall, ToolCall: &llm.ToolCall{
+					ID: "t-sum", Name: ToolSummarizeDocument, Args: json.RawMessage(fmt.Sprintf(`{"document_id":%q,"length":"short"}`, docID.String())),
+				}},
+				{Type: llm.StreamDone},
+			},
+			// 4) Nested LLM call from inside summarize_document. Returns the summary text.
+			{
+				{Type: llm.StreamText, Text: "A succinct summary."},
+				{Type: llm.StreamDone},
+			},
+			// 5) Main loop iter 4: final answer citing the focal chunk.
+			{
+				{Type: llm.StreamText, Text: fmt.Sprintf(`Done. <cite chunk="%s"/>`, hit.String())},
+				{Type: llm.StreamDone},
+			},
+		},
+	}
+
+	broker := events.NewBroker()
+	clientID := "test-client"
+	sub := broker.Subscribe(clientID)
+	defer broker.Unsubscribe(clientID)
+
+	a := &Agent{
+		Store:    s,
+		Embedder: &mockEmbedder{vec: emb},
+		Broker:   broker,
+		LLM:      llmMock,
+	}
+	msg, err := a.Run(ctx, RunInput{Session: sess, UserMessage: "tell me about widgets", APIKey: "user-key"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if llmMock.calls != 5 {
+		t.Errorf("llm calls = %d, want 5 (3 main iters + 1 nested summarize + final answer)", llmMock.calls)
+	}
+	if len(msg.Citations) != 1 {
+		t.Fatalf("citations = %d, want 1", len(msg.Citations))
+	}
+	if msg.Citations[0].ChunkID != hit {
+		t.Errorf("citation chunk_id mismatch: got %s want %s", msg.Citations[0].ChunkID, hit)
+	}
+
+	// Drain published events so we can assert tool_call / tool_result fired
+	// in the expected order. The broker is buffered; reading until we have
+	// observed each expected event keeps the test deterministic.
+	expectedToolCallNames := []string{ToolSearchDocuments, ToolGetChunkContext, ToolSummarizeDocument}
+	gotToolCalls := []string{}
+	gotToolResults := []string{}
+	gotComplete := false
+
+readLoop:
+	for {
+		select {
+		case ev, ok := <-sub:
+			if !ok {
+				break readLoop
+			}
+			data, _ := ev.Data.(map[string]any)
+			switch ev.Type {
+			case "agent.tool_call":
+				if name, _ := data["name"].(string); name != "" {
+					gotToolCalls = append(gotToolCalls, name)
+				}
+			case "agent.tool_result":
+				if name, _ := data["name"].(string); name != "" {
+					gotToolResults = append(gotToolResults, name)
+				}
+			case "agent.complete":
+				gotComplete = true
+			case "agent.error":
+				t.Fatalf("unexpected agent.error event: %+v", data)
+			}
+			if gotComplete {
+				break readLoop
+			}
+		default:
+			break readLoop
+		}
+	}
+
+	if len(gotToolCalls) != len(expectedToolCallNames) {
+		t.Errorf("tool_call events = %v, want %v", gotToolCalls, expectedToolCallNames)
+	} else {
+		for i, want := range expectedToolCallNames {
+			if gotToolCalls[i] != want {
+				t.Errorf("tool_call[%d] = %s, want %s", i, gotToolCalls[i], want)
+			}
+		}
+	}
+	if len(gotToolResults) != len(expectedToolCallNames) {
+		t.Errorf("tool_result events = %v, want %v", gotToolResults, expectedToolCallNames)
+	}
+	if !gotComplete {
+		t.Errorf("did not observe agent.complete event")
+	}
+}
+
 func TestRun_MaxIterations(t *testing.T) {
 	s := newTestStore(t)
 	userID := uuid.New()
