@@ -371,3 +371,67 @@ Then add to `.claude/mcp.json` here:
 Claude Code will then call `semantic_search_code(query)` instead of running
 its own grep loops, surfacing ranked chunks from this codebase.
 
+---
+
+## Voice input + agent tools expansion (2026-05-15)
+
+### Test count progression
+- Pre: backend **209** / 0 / 0 (last verified d3d08ca)
+- After Phase 1 (4 new agent tools + GetChunkByID in store): backend **231** / 0 / 0
+- After Phase 2 (Vitest setup, smoke tests): + **2** frontend tests
+- After Phase 3 (speech-recognition hook + tests): + **8** frontend tests (10 total)
+- After Phase 4 (ToolStatus component + test): + **4** frontend tests (**14** total)
+- **Final: backend 231 / 0 / 0, frontend 14 / 0 / 0**
+
+### Agent tools dispatcher pattern
+- New file [backend/internal/agent/tools.go](backend/internal/agent/tools.go) owns tool spec registration AND dispatch in one place. `agent.go` is now focused on the LLM loop; adding tool #6 means editing one switch case and one `Specs()` slice.
+- The dispatcher returns a `displayLabel` per call; the agent publishes it on both `agent.tool_call` and `agent.tool_result` SSE events. Frontend consumes via `streamingTools` state in `/agent/page.tsx`.
+- `summarize_document` does a **nested LLM call** with the user's API key, no tools, length-mapped system prompt. Bounded sub-step — doesn't recurse into the main agent loop. Each summarize call adds one round-trip and a few hundred output tokens.
+- Cross-tenant access: we treat wrong-user-id as **not-found**, not 403. Matches the existing search path and avoids leaking existence across users.
+
+### Citation behavior decision
+- `Citation.ChunkID` kept non-nullable. `summarize_document` doesn't emit citations — its return payload carries `source_document_id` + `source_title` instead, which the agent narrates in prose. Document-level citations would require schema change + UI rework, deferred until there's a real consumer.
+
+### Web Speech API gotchas
+- `SpeechRecognition` is **not** in the default `lib.dom.d.ts` (still marked experimental upstream). Added [src/types/speech-recognition.d.ts](src/types/speech-recognition.d.ts) with the minimal subset used.
+- Chrome/Edge/Safari support; Firefox needs a polyfill we don't ship. Hook returns `isSupported: false` and the MicButton renders disabled with a tooltip explaining why.
+- Audio is processed inside the browser-vendor layer (Chrome forwards to Google servers; Safari is on-device). DocInsight never sees audio bytes. The tooltip and lessons doc are explicit about this.
+- `no-speech` and `aborted` errors fire after ~2s silence — treat as graceful stop, NOT as errors. Surfacing them would spam the user.
+- `onresult` fires many times with growing `transcript[i].isFinal=false` chunks; only commit on `isFinal=true`. The hook tracks `transcript` (final) and `interimTranscript` (in-progress) separately.
+
+### MicButton commit pattern
+- The hook accumulates final transcripts; the button uses a `lastCommitted` ref to compute the *delta* and forward only new text to `onTranscript(text)`. Without the diff, every utterance would re-emit everything previously said.
+- On `isListening === false`, the button calls `reset()` to clear both the hook's internal transcript and the committed cache — so the next start session begins fresh.
+
+### Vitest setup: jsdom → happy-dom swap
+- Vitest 4.1 + jsdom 27.x ships an ESM/CJS mismatch: jsdom's CSS subsystem (`@asamuzakjp/css-color`) is CJS but `require()`s ESM-only `@csstools/css-calc`, blowing up Vitest's CJS worker pool with `ERR_REQUIRE_ESM`. Switching the test environment to **happy-dom** sidesteps the entire CSS dependency tree (we don't need full CSS in tests anyway).
+- Config file is `vitest.config.mts` (note `.mts`) — `.ts` config files cause Vitest's own config loader to hit the same ERR_REQUIRE_ESM when reading certain ESM-only deps. The `.mts` extension forces Node to treat it as ESM at load time.
+- happy-dom is also ~3× faster than jsdom for component tests — net win.
+
+### chi router additions: none
+This batch did not add new HTTP endpoints. The new agent tools all dispatch through the existing `/api/agent/sessions/{id}/messages` flow; the SSE event payload gained a `display_label` field, no schema change.
+
+### File reference additions
+| File | Purpose |
+| --- | --- |
+| `backend/internal/agent/tools.go` | Tool registration + dispatcher for all 5 agent tools |
+| `backend/internal/agent/tools_test.go` | Per-tool unit tests + scriptedLLM patterns |
+| `src/types/speech-recognition.d.ts` | Minimal TS typings for the Web Speech API |
+| `src/hooks/use-speech-recognition.ts` | React hook wrapping `SpeechRecognition` with state machine + cleanup |
+| `src/hooks/use-speech-recognition.test.ts` | Vitest unit tests for the hook (8 cases) |
+| `src/components/mic-button.tsx` | Pulsing-while-listening mic button used in search + agent |
+| `src/components/tool-status.tsx` | Inline status rows for in-flight + completed agent tool calls |
+| `src/components/tool-status.test.tsx` | Vitest component tests |
+| `vitest.config.mts` | happy-dom environment, `pool: "vmThreads"`, `@/*` alias |
+| `src/test/setup.ts` | Loads `@testing-library/jest-dom/vitest` matchers |
+| `src/test/smoke.test.ts` | Sanity check that the runner + jest-dom matchers work |
+
+### Known smoke-test limitation
+- Claude Preview MCP runs headless Chrome without microphone permission, so clicking the mic button does not transition to a listening state in automated smoke. We verified: button renders, has correct aria-label, `'webkitSpeechRecognition' in window` is true, click doesn't throw or break the page. **Real-browser manual verification required** to see the full listening flow.
+
+### Commits
+- `7204281` — Phase 1: 4 new agent tools
+- `8f093de` — Phase 2: Vitest + happy-dom setup
+- `295d093` — Phase 3: voice input via Web Speech API
+- `38aea0f` — Phase 4: render tool calls inline in agent UI
+
