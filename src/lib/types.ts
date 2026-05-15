@@ -11,8 +11,17 @@ export interface Document {
   error_message: string | null;
   source_type: "pdf" | "web";
   source_url: string | null;
+  folder_id?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface Folder {
+  id: string;
+  user_id?: string | null;
+  parent_id?: string | null;
+  name: string;
+  created_at: string;
 }
 
 export interface Chunk {
@@ -54,6 +63,8 @@ export interface SearchResult {
   source_url: string | null;
   match_type?: "semantic" | "keyword" | "hybrid";
   keyword_score?: number;
+  snippet: string;
+  highlight_tokens: string[];
 }
 
 export interface Tag {
@@ -69,6 +80,7 @@ export interface SearchRequest {
   threshold?: number;
   documentIds?: string[];
   searchMode?: SearchMode;
+  folder_id?: string | null;
 }
 
 export interface SearchResponse {
@@ -96,4 +108,34 @@ export interface PaginatedResponse<T> {
   page: number;
   pageSize: number;
   totalPages: number;
+}
+
+export type LLMProvider = "anthropic" | "openai";
+
+export interface AgentSession {
+  id: string;
+  user_id: string;
+  folder_id?: string | null;
+  title: string;
+  provider: LLMProvider;
+  model: string;
+  created_at: string;
+}
+
+export interface Citation {
+  chunk_id: string;
+  document_id: string;
+  document_name: string;
+  snippet: string;
+  page_number: number;
+  score: number;
+}
+
+export interface AgentMessage {
+  id: string;
+  session_id: string;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  citations?: Citation[];
+  created_at: string;
 }

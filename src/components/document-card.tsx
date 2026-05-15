@@ -1,8 +1,20 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { FileText, Globe, Trash2, Play, RefreshCcw, Calendar, HardDrive } from "lucide-react";
+import {
+  FileText,
+  Globe,
+  Trash2,
+  Play,
+  RefreshCcw,
+  Calendar,
+  HardDrive,
+  FolderInput,
+} from "lucide-react";
 import { StatusBadge } from "./status-badge";
+import { FolderPicker } from "./folder-picker";
+import { moveDocument } from "@/store/app-store";
 import type { Document } from "@/lib/types";
 
 interface DocumentCardProps {
@@ -10,6 +22,7 @@ interface DocumentCardProps {
   onProcess: (id: string) => void;
   onDelete: (id: string) => void;
   onRefresh?: (id: string) => void;
+  onMoved?: (id: string, folderId: string | null) => void;
   processing?: boolean;
 }
 
@@ -34,8 +47,21 @@ export function DocumentCard({
   onProcess,
   onDelete,
   onRefresh,
+  onMoved,
   processing,
 }: DocumentCardProps) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const handleMove = async (folderId: string | null) => {
+    try {
+      await moveDocument(document.id, folderId);
+      onMoved?.(document.id, folderId);
+    } catch (err) {
+      console.error("Move failed:", err);
+      alert((err as Error).message);
+    }
+  };
+
   return (
     <div className="group rounded-xl border border-neutral-200 bg-white p-5 shadow-sm transition-all hover:shadow-md dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex items-start justify-between gap-3">
@@ -109,6 +135,14 @@ export function DocumentCard({
           </button>
         )}
         <button
+          onClick={() => setPickerOpen(true)}
+          className="flex items-center gap-1.5 rounded-lg border border-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-600 transition-colors hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          title="Move to folder"
+        >
+          <FolderInput size={12} />
+          Move
+        </button>
+        <button
           onClick={() => onDelete(document.id)}
           className="ml-auto flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
         >
@@ -116,6 +150,13 @@ export function DocumentCard({
           Delete
         </button>
       </div>
+
+      <FolderPicker
+        isOpen={pickerOpen}
+        currentFolderId={document.folder_id ?? null}
+        onSelect={handleMove}
+        onClose={() => setPickerOpen(false)}
+      />
     </div>
   );
 }

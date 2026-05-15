@@ -173,6 +173,62 @@ func (s *SQLiteStore) migrate() error {
 		return err
 	}
 
+	// Folders table
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS folders (
+			id TEXT PRIMARY KEY,
+			user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+			parent_id TEXT REFERENCES folders(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			created_at TEXT DEFAULT (datetime('now')),
+			UNIQUE(user_id, parent_id, name)
+		);
+		CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
+		CREATE INDEX IF NOT EXISTS idx_folders_user ON folders(user_id);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_unique_user_root ON folders(user_id, name) WHERE parent_id IS NULL AND user_id IS NOT NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_unique_anon_root ON folders(name) WHERE parent_id IS NULL AND user_id IS NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_unique_anon_child ON folders(parent_id, name) WHERE user_id IS NULL AND parent_id IS NOT NULL;
+	`)
+	if err != nil {
+		return err
+	}
+
+	// Add folder_id column to documents (idempotent)
+	_, addErr = s.db.Exec(`ALTER TABLE documents ADD COLUMN folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL`)
+	if addErr != nil && !strings.Contains(addErr.Error(), "duplicate column") {
+		return addErr
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents(folder_id)`); err != nil {
+		return err
+	}
+
+	// Agent sessions + messages
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_sessions (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
+			title TEXT DEFAULT '',
+			provider TEXT NOT NULL,
+			model TEXT NOT NULL,
+			created_at TEXT DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_agent_sessions_user ON agent_sessions(user_id);
+
+		CREATE TABLE IF NOT EXISTS agent_messages (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			citations TEXT,
+			created_at TEXT DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id);
+	`)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -208,7 +264,16 @@ func (s *SQLiteStore) Close() {
 
 // --- Documents ---
 
-func (s *SQLiteStore) InsertDocument(ctx context.Context, doc *model.Document) error {
+// userIDStringOrEmpty returns user.String() if non-nil, "" otherwise.
+// Used for the AND (user_id = ? OR ? = '') pattern that no-ops when filter is absent.
+func userIDStringOrEmpty(userID *uuid.UUID) string {
+	if userID == nil {
+		return ""
+	}
+	return userID.String()
+}
+
+func (s *SQLiteStore) InsertDocument(ctx context.Context, doc *model.Document, userID *uuid.UUID) error {
 	sourceType := doc.SourceType
 	if sourceType == "" {
 		sourceType = model.SourceTypePDF
@@ -217,22 +282,40 @@ func (s *SQLiteStore) InsertDocument(ctx context.Context, doc *model.Document) e
 	if doc.SourceURL != nil {
 		sourceURL = doc.SourceURL
 	}
+	var userIDStr *string
+	if userID != nil {
+		s := userID.String()
+		userIDStr = &s
+	} else if doc.UserID != nil {
+		s := doc.UserID.String()
+		userIDStr = &s
+	}
+	var folderIDStr *string
+	if doc.FolderID != nil {
+		f := doc.FolderID.String()
+		folderIDStr = &f
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO documents (id, name, file_path, file_size, status, page_count, source_type, source_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		doc.ID.String(), doc.Name, doc.FilePath, doc.FileSize, doc.Status, doc.PageCount, sourceType, sourceURL,
+		`INSERT INTO documents (id, name, file_path, file_size, status, page_count, source_type, source_url, user_id, folder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		doc.ID.String(), doc.Name, doc.FilePath, doc.FileSize, doc.Status, doc.PageCount, sourceType, sourceURL, userIDStr, folderIDStr,
 	)
+	if err == nil && userIDStr != nil {
+		uid, _ := uuid.Parse(*userIDStr)
+		doc.UserID = &uid
+	}
 	return err
 }
 
-func (s *SQLiteStore) GetDocument(ctx context.Context, id uuid.UUID) (*model.Document, error) {
+func (s *SQLiteStore) GetDocument(ctx context.Context, id uuid.UUID, userID *uuid.UUID) (*model.Document, error) {
 	doc := &model.Document{}
 	var idStr, uploadDate, status, createdAt, updatedAt string
-	var errMsg, sourceURL sql.NullString
+	var errMsg, sourceURL, userIDCol, folderIDCol sql.NullString
 
+	uidFilter := userIDStringOrEmpty(userID)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, upload_date, page_count, status, file_path, file_size, error_message, source_type, source_url, created_at, updated_at
-		 FROM documents WHERE id = ?`, id.String(),
-	).Scan(&idStr, &doc.Name, &uploadDate, &doc.PageCount, &status, &doc.FilePath, &doc.FileSize, &errMsg, &doc.SourceType, &sourceURL, &createdAt, &updatedAt)
+		`SELECT id, name, upload_date, page_count, status, file_path, file_size, error_message, source_type, source_url, user_id, folder_id, created_at, updated_at
+		 FROM documents WHERE id = ? AND (user_id = ? OR ? = '')`, id.String(), uidFilter, uidFilter,
+	).Scan(&idStr, &doc.Name, &uploadDate, &doc.PageCount, &status, &doc.FilePath, &doc.FileSize, &errMsg, &doc.SourceType, &sourceURL, &userIDCol, &folderIDCol, &createdAt, &updatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -252,31 +335,58 @@ func (s *SQLiteStore) GetDocument(ctx context.Context, id uuid.UUID) (*model.Doc
 	if sourceURL.Valid {
 		doc.SourceURL = &sourceURL.String
 	}
+	if userIDCol.Valid {
+		if parsed, perr := uuid.Parse(userIDCol.String); perr == nil {
+			doc.UserID = &parsed
+		}
+	}
+	if folderIDCol.Valid {
+		if parsed, perr := uuid.Parse(folderIDCol.String); perr == nil {
+			doc.FolderID = &parsed
+		}
+	}
 
 	return doc, nil
 }
 
-func (s *SQLiteStore) ListDocuments(ctx context.Context, page, pageSize int, status *string) ([]model.Document, int, error) {
-	// Count
-	countQuery := "SELECT COUNT(*) FROM documents"
-	countArgs := []interface{}{}
+func (s *SQLiteStore) ListDocuments(ctx context.Context, page, pageSize int, status *string, userID *uuid.UUID, folderID *uuid.UUID) ([]model.Document, int, error) {
+	uidFilter := userIDStringOrEmpty(userID)
+
+	// Build WHERE clause
+	whereClauses := []string{"(user_id = ? OR ? = '')"}
+	baseArgs := []interface{}{uidFilter, uidFilter}
 	if status != nil {
-		countQuery += " WHERE status = ?"
-		countArgs = append(countArgs, *status)
+		whereClauses = append(whereClauses, "status = ?")
+		baseArgs = append(baseArgs, *status)
 	}
+	// Expand folder filter to include all descendants.
+	if folderID != nil {
+		ids, err := s.FolderDescendants(ctx, *folderID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(ids) == 0 {
+			// folder didn't exist; ensure no rows are returned
+			return []model.Document{}, 0, nil
+		}
+		placeholders := make([]string, len(ids))
+		for i, id := range ids {
+			placeholders[i] = "?"
+			baseArgs = append(baseArgs, id.String())
+		}
+		whereClauses = append(whereClauses, "folder_id IN ("+strings.Join(placeholders, ",")+")")
+	}
+	whereSQL := " WHERE " + strings.Join(whereClauses, " AND ")
+
+	// Count
 	var total int
-	if err := s.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM documents"+whereSQL, baseArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	// Data
-	dataQuery := "SELECT id, name, upload_date, page_count, status, file_path, file_size, error_message, source_type, source_url, created_at, updated_at FROM documents"
-	dataArgs := []interface{}{}
-	if status != nil {
-		dataQuery += " WHERE status = ?"
-		dataArgs = append(dataArgs, *status)
-	}
-	dataQuery += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	dataQuery := "SELECT id, name, upload_date, page_count, status, file_path, file_size, error_message, source_type, source_url, user_id, folder_id, created_at, updated_at FROM documents" + whereSQL + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	dataArgs := append([]interface{}{}, baseArgs...)
 	dataArgs = append(dataArgs, pageSize, (page-1)*pageSize)
 
 	rows, err := s.db.QueryContext(ctx, dataQuery, dataArgs...)
@@ -289,9 +399,9 @@ func (s *SQLiteStore) ListDocuments(ctx context.Context, page, pageSize int, sta
 	for rows.Next() {
 		var doc model.Document
 		var idStr, uploadDate, statusStr, createdAt, updatedAt string
-		var errMsg, sourceURL sql.NullString
+		var errMsg, sourceURL, userIDCol, folderIDCol sql.NullString
 
-		if err := rows.Scan(&idStr, &doc.Name, &uploadDate, &doc.PageCount, &statusStr, &doc.FilePath, &doc.FileSize, &errMsg, &doc.SourceType, &sourceURL, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&idStr, &doc.Name, &uploadDate, &doc.PageCount, &statusStr, &doc.FilePath, &doc.FileSize, &errMsg, &doc.SourceType, &sourceURL, &userIDCol, &folderIDCol, &createdAt, &updatedAt); err != nil {
 			return nil, 0, err
 		}
 
@@ -305,6 +415,16 @@ func (s *SQLiteStore) ListDocuments(ctx context.Context, page, pageSize int, sta
 		}
 		if sourceURL.Valid {
 			doc.SourceURL = &sourceURL.String
+		}
+		if userIDCol.Valid {
+			if parsed, perr := uuid.Parse(userIDCol.String); perr == nil {
+				doc.UserID = &parsed
+			}
+		}
+		if folderIDCol.Valid {
+			if parsed, perr := uuid.Parse(folderIDCol.String); perr == nil {
+				doc.FolderID = &parsed
+			}
 		}
 		docs = append(docs, doc)
 	}
@@ -328,9 +448,14 @@ func (s *SQLiteStore) UpdateDocumentPageCount(ctx context.Context, id uuid.UUID,
 	return err
 }
 
-func (s *SQLiteStore) DeleteDocument(ctx context.Context, id uuid.UUID) (string, error) {
+func (s *SQLiteStore) DeleteDocument(ctx context.Context, id uuid.UUID, userID *uuid.UUID) (string, error) {
+	uidFilter := userIDStringOrEmpty(userID)
+
 	var filePath string
-	err := s.db.QueryRowContext(ctx, `SELECT file_path FROM documents WHERE id = ?`, id.String()).Scan(&filePath)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT file_path FROM documents WHERE id = ? AND (user_id = ? OR ? = '')`,
+		id.String(), uidFilter, uidFilter,
+	).Scan(&filePath)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("document not found")
 	}
@@ -354,7 +479,10 @@ func (s *SQLiteStore) DeleteDocument(ctx context.Context, id uuid.UUID) (string,
 		s.mu.Unlock()
 	}
 
-	_, err = s.db.ExecContext(ctx, `DELETE FROM documents WHERE id = ?`, id.String())
+	_, err = s.db.ExecContext(ctx,
+		`DELETE FROM documents WHERE id = ? AND (user_id = ? OR ? = '')`,
+		id.String(), uidFilter, uidFilter,
+	)
 	return filePath, err
 }
 
@@ -486,34 +614,47 @@ func (s *SQLiteStore) InsertEmbeddings(ctx context.Context, chunkIDs []uuid.UUID
 
 // --- Search (brute-force cosine similarity in Go) ---
 
-func (s *SQLiteStore) MatchEmbeddings(ctx context.Context, queryEmb []float32, threshold float64, limit int, docIDs []uuid.UUID) ([]model.SearchResult, error) {
+func (s *SQLiteStore) MatchEmbeddings(ctx context.Context, queryEmb []float32, threshold float64, limit int, docIDs []uuid.UUID, userID *uuid.UUID, folderID *uuid.UUID) ([]model.SearchResult, error) {
 	// Build set of allowed document IDs
 	docIDSet := make(map[string]bool)
 	for _, id := range docIDs {
 		docIDSet[id.String()] = true
 	}
 	filterByDoc := len(docIDs) > 0
+	uidFilter := userIDStringOrEmpty(userID)
 
 	// Get all chunks with their document info
 	query := `
 		SELECT c.id, c.content, c.page_number, c.chunk_index, c.metadata, c.document_id, d.name, d.status, d.source_type, d.source_url
 		FROM chunks c
 		JOIN documents d ON d.id = c.document_id
-		WHERE d.status = 'completed'
+		WHERE d.status = 'completed' AND (d.user_id = ? OR ? = '')
 	`
+	args := []interface{}{uidFilter, uidFilter}
 	if filterByDoc {
 		placeholders := make([]string, len(docIDs))
 		for i := range docIDs {
 			placeholders[i] = "?"
 		}
 		query += " AND d.id IN (" + strings.Join(placeholders, ",") + ")"
-	}
-
-	args := []interface{}{}
-	if filterByDoc {
 		for _, id := range docIDs {
 			args = append(args, id.String())
 		}
+	}
+	if folderID != nil {
+		fids, err := s.FolderDescendants(ctx, *folderID)
+		if err != nil {
+			return nil, err
+		}
+		if len(fids) == 0 {
+			return []model.SearchResult{}, nil
+		}
+		placeholders := make([]string, len(fids))
+		for i, fid := range fids {
+			placeholders[i] = "?"
+			args = append(args, fid.String())
+		}
+		query += " AND d.folder_id IN (" + strings.Join(placeholders, ",") + ")"
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -603,8 +744,9 @@ func (s *SQLiteStore) MatchEmbeddings(ctx context.Context, queryEmb []float32, t
 
 // --- Keyword Search (FTS5) ---
 
-func (s *SQLiteStore) KeywordSearch(ctx context.Context, queryText string, limit int, docIDs []uuid.UUID) ([]model.SearchResult, error) {
+func (s *SQLiteStore) KeywordSearch(ctx context.Context, queryText string, limit int, docIDs []uuid.UUID, userID *uuid.UUID, folderID *uuid.UUID) ([]model.SearchResult, error) {
 	filterByDoc := len(docIDs) > 0
+	uidFilter := userIDStringOrEmpty(userID)
 
 	query := `
 		SELECT f.chunk_id, f.document_id, f.content, c.page_number, c.chunk_index, c.metadata,
@@ -612,9 +754,9 @@ func (s *SQLiteStore) KeywordSearch(ctx context.Context, queryText string, limit
 		FROM chunks_fts f
 		JOIN chunks c ON c.id = f.chunk_id
 		JOIN documents d ON d.id = f.document_id
-		WHERE chunks_fts MATCH ? AND d.status = 'completed'
+		WHERE chunks_fts MATCH ? AND d.status = 'completed' AND (d.user_id = ? OR ? = '')
 	`
-	args := []interface{}{queryText}
+	args := []interface{}{queryText, uidFilter, uidFilter}
 
 	if filterByDoc {
 		placeholders := make([]string, len(docIDs))
@@ -623,6 +765,22 @@ func (s *SQLiteStore) KeywordSearch(ctx context.Context, queryText string, limit
 			args = append(args, id.String())
 		}
 		query += " AND d.id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	if folderID != nil {
+		fids, err := s.FolderDescendants(ctx, *folderID)
+		if err != nil {
+			return nil, err
+		}
+		if len(fids) == 0 {
+			return []model.SearchResult{}, nil
+		}
+		placeholders := make([]string, len(fids))
+		for i, fid := range fids {
+			placeholders[i] = "?"
+			args = append(args, fid.String())
+		}
+		query += " AND d.folder_id IN (" + strings.Join(placeholders, ",") + ")"
 	}
 
 	query += " ORDER BY score LIMIT ?"
@@ -675,7 +833,7 @@ func (s *SQLiteStore) KeywordSearch(ctx context.Context, queryText string, limit
 
 // --- Hybrid Search (FTS5 + Cosine Similarity merged via RRF) ---
 
-func (s *SQLiteStore) HybridSearch(ctx context.Context, queryEmb []float32, queryText string, threshold float64, limit int, docIDs []uuid.UUID) ([]model.SearchResult, error) {
+func (s *SQLiteStore) HybridSearch(ctx context.Context, queryEmb []float32, queryText string, threshold float64, limit int, docIDs []uuid.UUID, userID *uuid.UUID, folderID *uuid.UUID) ([]model.SearchResult, error) {
 	// Run both searches with expanded limit to get enough candidates for fusion
 	expandedLimit := limit * 3
 	if expandedLimit < 20 {
@@ -683,7 +841,7 @@ func (s *SQLiteStore) HybridSearch(ctx context.Context, queryEmb []float32, quer
 	}
 
 	// Step 1: Semantic search
-	semanticResults, err := s.MatchEmbeddings(ctx, queryEmb, threshold, expandedLimit, docIDs)
+	semanticResults, err := s.MatchEmbeddings(ctx, queryEmb, threshold, expandedLimit, docIDs, userID, folderID)
 	if err != nil {
 		return nil, fmt.Errorf("semantic search: %w", err)
 	}
@@ -692,7 +850,7 @@ func (s *SQLiteStore) HybridSearch(ctx context.Context, queryEmb []float32, quer
 	}
 
 	// Step 2: Keyword search
-	keywordResults, err := s.KeywordSearch(ctx, queryText, expandedLimit, docIDs)
+	keywordResults, err := s.KeywordSearch(ctx, queryText, expandedLimit, docIDs, userID, folderID)
 	if err != nil {
 		// FTS5 may fail on invalid syntax — fall back to semantic only
 		return semanticResults, nil
@@ -956,4 +1114,329 @@ func (s *SQLiteStore) GetDocumentTags(ctx context.Context, documentID uuid.UUID)
 		tags = append(tags, t)
 	}
 	return tags, rows.Err()
+}
+
+// --- Folder Methods ---
+
+func (s *SQLiteStore) CreateFolder(ctx context.Context, folder *model.Folder) error {
+	var userIDStr *string
+	if folder.UserID != nil {
+		u := folder.UserID.String()
+		userIDStr = &u
+	}
+	var parentIDStr *string
+	if folder.ParentID != nil {
+		p := folder.ParentID.String()
+		parentIDStr = &p
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO folders (id, user_id, parent_id, name) VALUES (?, ?, ?, ?)`,
+		folder.ID.String(), userIDStr, parentIDStr, folder.Name,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetFolder(ctx context.Context, id uuid.UUID, userID *uuid.UUID) (*model.Folder, error) {
+	uidFilter := userIDStringOrEmpty(userID)
+	var idStr, name, createdAt string
+	var userIDCol, parentIDCol sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, user_id, parent_id, name, created_at FROM folders WHERE id = ? AND (user_id = ? OR ? = '')`,
+		id.String(), uidFilter, uidFilter,
+	).Scan(&idStr, &userIDCol, &parentIDCol, &name, &createdAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	f := &model.Folder{Name: name, CreatedAt: parseTime(createdAt)}
+	f.ID, _ = uuid.Parse(idStr)
+	if userIDCol.Valid {
+		if parsed, perr := uuid.Parse(userIDCol.String); perr == nil {
+			f.UserID = &parsed
+		}
+	}
+	if parentIDCol.Valid {
+		if parsed, perr := uuid.Parse(parentIDCol.String); perr == nil {
+			f.ParentID = &parsed
+		}
+	}
+	return f, nil
+}
+
+func (s *SQLiteStore) ListFolders(ctx context.Context, userID *uuid.UUID, parentID *uuid.UUID) ([]model.Folder, error) {
+	uidFilter := userIDStringOrEmpty(userID)
+	var rows *sql.Rows
+	var err error
+	if parentID == nil {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, user_id, parent_id, name, created_at FROM folders
+			 WHERE parent_id IS NULL AND (user_id = ? OR ? = '')
+			 ORDER BY name`,
+			uidFilter, uidFilter,
+		)
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, user_id, parent_id, name, created_at FROM folders
+			 WHERE parent_id = ? AND (user_id = ? OR ? = '')
+			 ORDER BY name`,
+			parentID.String(), uidFilter, uidFilter,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var folders []model.Folder
+	for rows.Next() {
+		var f model.Folder
+		var idStr, name, createdAt string
+		var userIDCol, parentIDCol sql.NullString
+		if err := rows.Scan(&idStr, &userIDCol, &parentIDCol, &name, &createdAt); err != nil {
+			return nil, err
+		}
+		f.ID, _ = uuid.Parse(idStr)
+		f.Name = name
+		f.CreatedAt = parseTime(createdAt)
+		if userIDCol.Valid {
+			if parsed, perr := uuid.Parse(userIDCol.String); perr == nil {
+				f.UserID = &parsed
+			}
+		}
+		if parentIDCol.Valid {
+			if parsed, perr := uuid.Parse(parentIDCol.String); perr == nil {
+				f.ParentID = &parsed
+			}
+		}
+		folders = append(folders, f)
+	}
+	return folders, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteFolder(ctx context.Context, id uuid.UUID, userID *uuid.UUID) error {
+	uidFilter := userIDStringOrEmpty(userID)
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM folders WHERE id = ? AND (user_id = ? OR ? = '')`,
+		id.String(), uidFilter, uidFilter,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("folder not found")
+	}
+	return nil
+}
+
+func (s *SQLiteStore) MoveDocumentToFolder(ctx context.Context, docID uuid.UUID, folderID *uuid.UUID, userID *uuid.UUID) error {
+	uidFilter := userIDStringOrEmpty(userID)
+
+	// Verify doc belongs to user (or auth disabled)
+	doc, err := s.GetDocument(ctx, docID, userID)
+	if err != nil {
+		return err
+	}
+	if doc == nil {
+		return fmt.Errorf("document not found")
+	}
+
+	// Verify folder belongs to user (when folderID provided)
+	if folderID != nil {
+		folder, err := s.GetFolder(ctx, *folderID, userID)
+		if err != nil {
+			return err
+		}
+		if folder == nil {
+			return fmt.Errorf("folder not found")
+		}
+	}
+
+	var folderIDStr *string
+	if folderID != nil {
+		f := folderID.String()
+		folderIDStr = &f
+	}
+
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE documents SET folder_id = ?, updated_at = datetime('now') WHERE id = ? AND (user_id = ? OR ? = '')`,
+		folderIDStr, docID.String(), uidFilter, uidFilter,
+	)
+	return err
+}
+
+func (s *SQLiteStore) FolderDescendants(ctx context.Context, folderID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH RECURSIVE tree(id) AS (
+			SELECT id FROM folders WHERE id = ?
+			UNION ALL
+			SELECT f.id FROM folders f JOIN tree t ON f.parent_id = t.id
+		)
+		SELECT id FROM tree
+	`, folderID.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var idStr string
+		if err := rows.Scan(&idStr); err != nil {
+			return nil, err
+		}
+		if parsed, perr := uuid.Parse(idStr); perr == nil {
+			ids = append(ids, parsed)
+		}
+	}
+	return ids, rows.Err()
+}
+
+// --- Agent Session Methods ---
+
+func (s *SQLiteStore) CreateAgentSession(ctx context.Context, session *model.AgentSession) error {
+	var folderIDStr *string
+	if session.FolderID != nil {
+		f := session.FolderID.String()
+		folderIDStr = &f
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent_sessions (id, user_id, folder_id, title, provider, model) VALUES (?, ?, ?, ?, ?, ?)`,
+		session.ID.String(), session.UserID.String(), folderIDStr, session.Title, session.Provider, session.Model,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetAgentSession(ctx context.Context, id uuid.UUID, userID *uuid.UUID) (*model.AgentSession, error) {
+	uidFilter := userIDStringOrEmpty(userID)
+	var idStr, userIDStr, title, provider, modelName, createdAt string
+	var folderIDCol sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, user_id, folder_id, title, provider, model, created_at FROM agent_sessions
+		 WHERE id = ? AND (user_id = ? OR ? = '')`,
+		id.String(), uidFilter, uidFilter,
+	).Scan(&idStr, &userIDStr, &folderIDCol, &title, &provider, &modelName, &createdAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sess := &model.AgentSession{
+		Title:     title,
+		Provider:  provider,
+		Model:     modelName,
+		CreatedAt: parseTime(createdAt),
+	}
+	sess.ID, _ = uuid.Parse(idStr)
+	sess.UserID, _ = uuid.Parse(userIDStr)
+	if folderIDCol.Valid {
+		if parsed, perr := uuid.Parse(folderIDCol.String); perr == nil {
+			sess.FolderID = &parsed
+		}
+	}
+	return sess, nil
+}
+
+func (s *SQLiteStore) ListAgentSessions(ctx context.Context, userID *uuid.UUID) ([]model.AgentSession, error) {
+	uidFilter := userIDStringOrEmpty(userID)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, folder_id, title, provider, model, created_at FROM agent_sessions
+		 WHERE (user_id = ? OR ? = '')
+		 ORDER BY created_at DESC`,
+		uidFilter, uidFilter,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []model.AgentSession
+	for rows.Next() {
+		var sess model.AgentSession
+		var idStr, userIDStr, title, provider, modelName, createdAt string
+		var folderIDCol sql.NullString
+		if err := rows.Scan(&idStr, &userIDStr, &folderIDCol, &title, &provider, &modelName, &createdAt); err != nil {
+			return nil, err
+		}
+		sess.ID, _ = uuid.Parse(idStr)
+		sess.UserID, _ = uuid.Parse(userIDStr)
+		sess.Title = title
+		sess.Provider = provider
+		sess.Model = modelName
+		sess.CreatedAt = parseTime(createdAt)
+		if folderIDCol.Valid {
+			if parsed, perr := uuid.Parse(folderIDCol.String); perr == nil {
+				sess.FolderID = &parsed
+			}
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteAgentSession(ctx context.Context, id uuid.UUID, userID *uuid.UUID) error {
+	uidFilter := userIDStringOrEmpty(userID)
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM agent_sessions WHERE id = ? AND (user_id = ? OR ? = '')`,
+		id.String(), uidFilter, uidFilter,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("session not found")
+	}
+	return nil
+}
+
+func (s *SQLiteStore) InsertAgentMessage(ctx context.Context, msg *model.AgentMessage) error {
+	citationsStr, err := msg.MarshalCitations()
+	if err != nil {
+		return fmt.Errorf("marshal citations: %w", err)
+	}
+	var citations *string
+	if citationsStr != "" {
+		citations = &citationsStr
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO agent_messages (id, session_id, role, content, citations) VALUES (?, ?, ?, ?, ?)`,
+		msg.ID.String(), msg.SessionID.String(), msg.Role, msg.Content, citations,
+	)
+	return err
+}
+
+func (s *SQLiteStore) ListAgentMessages(ctx context.Context, sessionID uuid.UUID) ([]model.AgentMessage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, role, content, citations, created_at FROM agent_messages
+		 WHERE session_id = ? ORDER BY created_at ASC, id ASC`,
+		sessionID.String(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []model.AgentMessage
+	for rows.Next() {
+		var msg model.AgentMessage
+		var idStr, sessIDStr, role, content, createdAt string
+		var citationsCol sql.NullString
+		if err := rows.Scan(&idStr, &sessIDStr, &role, &content, &citationsCol, &createdAt); err != nil {
+			return nil, err
+		}
+		msg.ID, _ = uuid.Parse(idStr)
+		msg.SessionID, _ = uuid.Parse(sessIDStr)
+		msg.Role = role
+		msg.Content = content
+		msg.CreatedAt = parseTime(createdAt)
+		if citationsCol.Valid {
+			_ = msg.UnmarshalCitations(citationsCol.String)
+		}
+		messages = append(messages, msg)
+	}
+	return messages, rows.Err()
 }

@@ -244,3 +244,72 @@ Key files and what they do:
 - SSE connections log `status=0` — correct for long-lived streaming connections
 - Auth `/api/auth/me` returns 401 before login (expected, no token)
 - Registration creates `di_`-prefixed API key, header updates to show user name
+
+---
+
+## Snippets, Folders & BYO-LLM Agent (2026-05-14)
+
+### Test count progression
+- Baseline: **155** passing, 0 skipped
+- After pre-work (user_id enforcement on documents): **155** (no new tests added, existing tests updated with nil userID)
+- After Snippets: **166** (+11 snippet extraction + handler tests)
+- After Folders: **194** (+28 folder CRUD + recursive descendant + scoped-search tests)
+- After BYO-LLM Agent: **209** (+15 llm streaming parser + agent loop + handler tests)
+- **Final: 209 passing / 0 skipped / 0 failed**
+
+### Snippet extraction algorithm gotchas
+- File: `backend/internal/handler/snippet.go`
+- Tokenize query: lowercase, drop tokens shorter than 2 chars, drop a small stopword set (`the`, `and`, `for`, `with`, ...). If all tokens are stopwords, **fall back** to the leading window — don't return empty.
+- Earliest-match wins: scan content case-insensitively for any query token; pick the lowest offset across all tokens.
+- Window: `content[max(0, offset-50) : min(len, offset+windowSize-50)]` — centers the match with ~50 chars of leading context.
+- Edge ellipsis: prepend `…` (U+2026, **one char** not three dots) iff the window starts after byte 0; append `…` iff window ends before end of content. Using three ASCII dots inflates length and confuses downstream highlight tokenizers.
+- Tokens for the UI: return the deduped, non-stopword query tokens as `highlight_tokens` so the frontend can wrap each occurrence with `<mark>` — the frontend never re-tokenizes.
+- Byte vs rune indexing: SQLite text is UTF-8; we use byte offsets throughout. A multibyte char split at a window boundary produces invalid UTF-8 — clamp to nearest rune boundary before slicing.
+
+### Recursive CTE pitfalls (folders)
+- SQLite's `WITH RECURSIVE tree(id) AS (SELECT id FROM folders WHERE id = ? UNION ALL SELECT f.id FROM folders f JOIN tree t ON f.parent_id = t.id)` returns the seed folder plus all descendants in a single query — used by `FolderDescendants()` to scope document lists and search to a folder subtree.
+- **Cycle detection**: we don't currently enforce a DAG. `CreateFolder` only validates `parent_id` exists and belongs to the same user; if we ever expose a "move folder" API that rewrites `parent_id`, a malicious or buggy client could create A→B→A. SQLite's recursive CTE has no built-in cycle break, so the query would loop until SQLITE_LIMIT_DEPTH (default 1000) — slow but not catastrophic. **If folder reparenting ships, add cycle check**: walk ancestor chain before update and reject if target descendant of source.
+- `ON DELETE CASCADE` on `folders(parent_id)` cleans up the subtree; `ON DELETE SET NULL` on `documents.folder_id` keeps documents alive but "unfiled" — the dashboard's "All documents" view still shows them.
+
+### SSE backpressure (agent streaming)
+- `backend/internal/events/broker.go` uses **non-blocking sends** (`select { case ch <- evt: default: drop }`) — slow consumers silently lose events.
+- Agent text deltas can arrive at >100 events/sec when the LLM is streaming a long response. If the EventSource client (browser tab in background, throttled JS event loop) reads slower, deltas get dropped and the streamed text in the UI looks truncated — but on `agent.complete` we **refetch** the full message from `/api/agent/sessions/{id}/messages`, so the final state is always correct.
+- The UI shows mid-stream text optimistically (best-effort) and replaces it with the authoritative persisted message on complete. Don't try to "fix" backpressure by adding per-client buffers — drops are acceptable because we have a refetch fallback.
+
+### API key transport: header vs cookie
+- Chose `X-LLM-API-Key` header per-request over a cookie or session-bound storage.
+- **Why header**: keys never need to persist server-side. No DB column for an encrypted key, no rotation endpoint, no "leaked key" incident response — if the user clears their browser, the key is gone. The header only lives in memory for the duration of one request; the LLM client uses it then we drop the reference.
+- **Why not cookie**: cookies imply server lifecycle (set/clear endpoints, expiry policy), and `HttpOnly` would force a roundtrip just to populate the agent request — defeating the simplicity.
+- **Why not URL param**: keys would land in server access logs, proxy logs, and browser history. Headers don't.
+- Client side: `src/lib/llm-key-storage.ts` reads/writes `localStorage["docinsight_llm_key_anthropic"|"docinsight_llm_key_openai"]`. The settings modal warns explicitly that the key is stored only in this browser and forwarded per-request.
+
+### LLM streaming parser notes
+- Anthropic SSE: events are `event: <name>\ndata: <json>\n\n`. Parser switches on event name (`content_block_start`, `content_block_delta`, `content_block_stop`, `message_stop`). Tool calls arrive as `content_block_start` with `type=tool_use` followed by `input_json_delta` chunks that **must be concatenated** before JSON-parsing.
+- OpenAI SSE: events are `data: <json>\n\n` with a terminal `data: [DONE]`. Tool calls arrive as `delta.tool_calls[i].function.arguments` chunks indexed by `i` — we accumulate into a map keyed by `index`, not by `id` (id only arrives on the first chunk).
+- Both clients expose a `BaseURL` field overridable in tests so `httptest.NewServer` can stub the upstream API.
+
+### chi router additions
+- `/api/folders` (GET/POST), `/api/folders/{id}` (DELETE)
+- `/api/documents/{id}/move` (POST `{folder_id}`)
+- `/api/agent/sessions` (GET/POST), `/api/agent/sessions/{id}` (DELETE)
+- `/api/agent/sessions/{id}/messages` (GET/POST — POST returns 202, agent runs in goroutine and publishes SSE)
+
+### File reference additions
+| File | Purpose |
+| --- | --- |
+| `backend/internal/handler/snippet.go` | Query tokenizer + earliest-match windowing for search snippets |
+| `backend/internal/handler/folders.go` | Folder CRUD + move-document endpoint |
+| `backend/internal/handler/agent.go` | Agent session CRUD + SendMessage (validates X-LLM-API-Key header) |
+| `backend/internal/model/folder.go` | Folder struct |
+| `backend/internal/model/agent.go` | AgentSession, AgentMessage, Citation + JSON marshal helpers |
+| `backend/internal/llm/client.go` | Client interface, Message/Tool/StreamEvent types, NewClient factory |
+| `backend/internal/llm/anthropic.go` | Anthropic Messages API SSE client |
+| `backend/internal/llm/openai.go` | OpenAI Chat Completions SSE client |
+| `backend/internal/agent/agent.go` | Tool-calling agent loop with citation extraction |
+| `src/lib/llm-key-storage.ts` | localStorage wrapper for per-provider API keys |
+| `src/components/folder-tree.tsx` | Sidebar recursive folder tree with inline create/delete |
+| `src/components/folder-picker.tsx` | Modal for "Move document to folder" |
+| `src/components/settings-llm-keys.tsx` | Settings modal for Anthropic/OpenAI key entry |
+| `src/components/agent-message.tsx` | Renders `<cite chunk="..."/>` markers as numbered superscripts with expandable source list |
+| `src/app/agent/page.tsx` | Full agent chat UI (sessions sidebar + streaming message thread) |
+

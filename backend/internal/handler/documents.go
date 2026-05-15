@@ -45,7 +45,14 @@ func (h *DocumentHandler) List(w http.ResponseWriter, r *http.Request) {
 		status = &s
 	}
 
-	docs, total, err := h.store.ListDocuments(r.Context(), page, pageSize, status)
+	var folderID *uuid.UUID
+	if fid := r.URL.Query().Get("folder_id"); fid != "" {
+		if parsed, perr := uuid.Parse(fid); perr == nil {
+			folderID = &parsed
+		}
+	}
+
+	docs, total, err := h.store.ListDocuments(r.Context(), page, pageSize, status, userIDFromContext(r.Context()), folderID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch documents")
 		return
@@ -73,7 +80,7 @@ func (h *DocumentHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := h.store.GetDocument(r.Context(), id)
+	doc, err := h.store.GetDocument(r.Context(), id, userIDFromContext(r.Context()))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch document")
 		return
@@ -107,7 +114,7 @@ func (h *DocumentHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filePath, err := h.store.DeleteDocument(r.Context(), id)
+	filePath, err := h.store.DeleteDocument(r.Context(), id, userIDFromContext(r.Context()))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Document not found")
 		return
@@ -173,14 +180,15 @@ func (h *DocumentHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		Status:   model.StatusPending,
 	}
 
-	if err := h.store.InsertDocument(r.Context(), doc); err != nil {
+	uid := userIDFromContext(r.Context())
+	if err := h.store.InsertDocument(r.Context(), doc, uid); err != nil {
 		os.Remove(filePath)
 		writeError(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 
 	// Re-fetch to get server-generated timestamps
-	refetched, err := h.store.GetDocument(r.Context(), documentID)
+	refetched, err := h.store.GetDocument(r.Context(), documentID, uid)
 	if err == nil && refetched != nil {
 		doc = refetched
 	}
@@ -274,16 +282,56 @@ func (h *DocumentHandler) savePart(r *http.Request, part *multipart.Part, filena
 		Status:   model.StatusPending,
 	}
 
-	if err := h.store.InsertDocument(r.Context(), doc); err != nil {
+	uid := userIDFromContext(r.Context())
+	if err := h.store.InsertDocument(r.Context(), doc, uid); err != nil {
 		os.Remove(filePath)
 		return nil, fmt.Errorf("database error")
 	}
 
-	refetched, err := h.store.GetDocument(r.Context(), documentID)
+	refetched, err := h.store.GetDocument(r.Context(), documentID, uid)
 	if err == nil && refetched != nil {
 		doc = refetched
 	}
 	return doc, nil
+}
+
+// Move moves a document to a folder (or to the root when folder_id is null).
+func (h *DocumentHandler) Move(w http.ResponseWriter, r *http.Request) {
+	docID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid document ID")
+		return
+	}
+
+	var req struct {
+		FolderID *string `json:"folder_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	var folderID *uuid.UUID
+	if req.FolderID != nil && *req.FolderID != "" {
+		parsed, perr := uuid.Parse(*req.FolderID)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, "Invalid folder ID")
+			return
+		}
+		folderID = &parsed
+	}
+
+	uid := userIDFromContext(r.Context())
+	if err := h.store.MoveDocumentToFolder(r.Context(), docID, folderID, uid); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	doc, _ := h.store.GetDocument(r.Context(), docID, uid)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"document": doc,
+		"message":  "Document moved",
+	})
 }
 
 // RefreshHandler handles re-crawling web documents.
@@ -305,7 +353,8 @@ func (h *RefreshHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := h.store.GetDocument(r.Context(), id)
+	uid := userIDFromContext(r.Context())
+	doc, err := h.store.GetDocument(r.Context(), id, uid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch document")
 		return
@@ -362,7 +411,7 @@ func (h *RefreshHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Re-fetch to get updated timestamps
-	refetched, err := h.store.GetDocument(r.Context(), id)
+	refetched, err := h.store.GetDocument(r.Context(), id, uid)
 	if err == nil && refetched != nil {
 		doc = refetched
 	}

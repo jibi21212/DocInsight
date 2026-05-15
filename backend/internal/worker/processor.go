@@ -57,7 +57,7 @@ func (p *Processor) Process(ctx context.Context, job queue.Job) {
 	docID := job.DocumentID
 	logger := slog.With("document_id", docID, "job_id", job.ID)
 
-	doc, err := p.store.GetDocument(ctx, docID)
+	doc, err := p.store.GetDocument(ctx, docID, nil)
 	if err != nil || doc == nil {
 		logger.Error("failed to get document", "error", err)
 		return

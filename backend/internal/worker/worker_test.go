@@ -152,7 +152,7 @@ func TestPoolProcessesJob(t *testing.T) {
 		FileSize: 100,
 		Status:   model.StatusProcessing,
 	}
-	if err := s.InsertDocument(context.Background(), doc); err != nil {
+	if err := s.InsertDocument(context.Background(), doc, nil); err != nil {
 		t.Fatalf("InsertDocument: %v", err)
 	}
 
@@ -169,7 +169,7 @@ func TestPoolProcessesJob(t *testing.T) {
 	// Wait for processing
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		d, _ := s.GetDocument(context.Background(), docID)
+		d, _ := s.GetDocument(context.Background(), docID, nil)
 		if d != nil && (d.Status == model.StatusCompleted || d.Status == model.StatusFailed) {
 			break
 		}
@@ -179,7 +179,7 @@ func TestPoolProcessesJob(t *testing.T) {
 	pool.Shutdown()
 
 	// Verify
-	d, _ := s.GetDocument(context.Background(), docID)
+	d, _ := s.GetDocument(context.Background(), docID, nil)
 	if d == nil {
 		t.Fatal("document not found after processing")
 	}
@@ -206,7 +206,7 @@ func TestProcessorFailure_SetsFailedStatus(t *testing.T) {
 
 	s.InsertDocument(context.Background(), &model.Document{
 		ID: docID, Name: "bad.pdf", FilePath: testFile, FileSize: 100, Status: model.StatusProcessing,
-	})
+	}, nil)
 
 	proc := NewProcessor(s, ext, nil, emb, nil, nil, q, cfg)
 
@@ -214,7 +214,7 @@ func TestProcessorFailure_SetsFailedStatus(t *testing.T) {
 	job := queue.NewProcessJob(docID, 0) // no retries
 	proc.Process(context.Background(), job)
 
-	d, _ := s.GetDocument(context.Background(), docID)
+	d, _ := s.GetDocument(context.Background(), docID, nil)
 	if d.Status != model.StatusFailed {
 		t.Errorf("status = %q, want failed", d.Status)
 	}
@@ -237,7 +237,7 @@ func TestProcessorRetry(t *testing.T) {
 
 	s.InsertDocument(context.Background(), &model.Document{
 		ID: docID, Name: "retry.pdf", FilePath: testFile, FileSize: 100, Status: model.StatusProcessing,
-	})
+	}, nil)
 
 	proc := NewProcessor(s, ext, nil, emb, nil, nil, q, cfg)
 
@@ -306,7 +306,7 @@ func TestProcessorWebDocument_Success(t *testing.T) {
 		SourceType: model.SourceTypeWeb,
 		SourceURL:  &sourceURL,
 	}
-	if err := s.InsertDocument(context.Background(), doc); err != nil {
+	if err := s.InsertDocument(context.Background(), doc, nil); err != nil {
 		t.Fatalf("InsertDocument: %v", err)
 	}
 
@@ -322,7 +322,7 @@ func TestProcessorWebDocument_Success(t *testing.T) {
 	// Wait for processing
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		d, _ := s.GetDocument(context.Background(), docID)
+		d, _ := s.GetDocument(context.Background(), docID, nil)
 		if d != nil && (d.Status == model.StatusCompleted || d.Status == model.StatusFailed) {
 			break
 		}
@@ -331,7 +331,7 @@ func TestProcessorWebDocument_Success(t *testing.T) {
 
 	pool.Shutdown()
 
-	d, _ := s.GetDocument(context.Background(), docID)
+	d, _ := s.GetDocument(context.Background(), docID, nil)
 	if d == nil {
 		t.Fatal("document not found after processing")
 	}
@@ -369,13 +369,13 @@ func TestProcessorWebDocument_ScraperFailure(t *testing.T) {
 		Status:     model.StatusProcessing,
 		SourceType: model.SourceTypeWeb,
 		SourceURL:  &sourceURL,
-	})
+	}, nil)
 
 	proc := NewProcessor(s, ext, scr, emb, nil, nil, q, cfg)
 	job := queue.NewProcessJob(docID, 0) // no retries
 	proc.Process(context.Background(), job)
 
-	d, _ := s.GetDocument(context.Background(), docID)
+	d, _ := s.GetDocument(context.Background(), docID, nil)
 	if d.Status != model.StatusFailed {
 		t.Errorf("status = %q, want failed", d.Status)
 	}

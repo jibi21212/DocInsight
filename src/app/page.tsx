@@ -6,6 +6,7 @@ import Link from "next/link";
 import { DocumentCard } from "@/components/document-card";
 import { SearchBar } from "@/components/search-bar";
 import { EmptyState } from "@/components/empty-state";
+import { FolderTree } from "@/components/folder-tree";
 import { useAppStore } from "@/store/app-store";
 import {
   fetchDocuments,
@@ -27,6 +28,8 @@ export default function DashboardPage() {
     setDocumentsLoading,
     updateDocumentStatus,
     removeDocument,
+    selectedFolderId,
+    setSelectedFolderId,
   } = useAppStore();
 
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -38,14 +41,14 @@ export default function DashboardPage() {
   const loadDocuments = useCallback(async () => {
     setDocumentsLoading(true);
     try {
-      const res = await fetchDocuments(1, 6);
+      const res = await fetchDocuments(1, 12, selectedFolderId);
       setDocuments(res.data, res.total);
     } catch (err) {
       console.error("Failed to load documents:", err);
     } finally {
       setDocumentsLoading(false);
     }
-  }, [setDocuments, setDocumentsLoading]);
+  }, [setDocuments, setDocumentsLoading, selectedFolderId]);
 
   useEffect(() => {
     loadDocuments();
@@ -101,7 +104,14 @@ export default function DashboardPage() {
     setSearchLoading(true);
     setSearchQuery(query);
     try {
-      const res = await searchDocuments(query, topK, threshold, undefined, searchMode);
+      const res = await searchDocuments(
+        query,
+        topK,
+        threshold,
+        undefined,
+        searchMode,
+        selectedFolderId,
+      );
       setSearchResults(res.results);
       setSearchTookMs(res.took_ms);
     } catch (err) {
@@ -119,7 +129,14 @@ export default function DashboardPage() {
   ).length;
 
   return (
-    <div className="space-y-8">
+    <div className="flex flex-col gap-6 lg:flex-row">
+      <aside className="w-full shrink-0 rounded-xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900 lg:w-60">
+        <FolderTree
+          selectedId={selectedFolderId}
+          onSelect={setSelectedFolderId}
+        />
+      </aside>
+      <div className="min-w-0 flex-1 space-y-8">
       {/* Stats */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
@@ -249,12 +266,14 @@ export default function DashboardPage() {
                 onProcess={handleProcess}
                 onDelete={handleDelete}
                 onRefresh={handleRefresh}
+                onMoved={loadDocuments}
                 processing={processingIds.has(doc.id)}
               />
             ))}
           </div>
         )}
       </section>
+      </div>
     </div>
   );
 }

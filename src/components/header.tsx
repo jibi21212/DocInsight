@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FileText, Search, Upload, Moon, Sun, LogIn, LogOut } from "lucide-react";
+import { FileText, Search, Upload, Moon, Sun, LogIn, LogOut, Sparkles } from "lucide-react";
 import { useAppStore } from "@/store/app-store";
 import { useAuth } from "@/lib/auth-context";
 import { useEffect } from "react";
@@ -11,6 +11,7 @@ const navItems = [
   { href: "/", label: "Dashboard", icon: FileText },
   { href: "/upload", label: "Upload", icon: Upload },
   { href: "/search", label: "Search", icon: Search },
+  { href: "/agent", label: "Agent", icon: Sparkles },
 ];
 
 export function Header() {

@@ -87,7 +87,7 @@ func TestList_WithDocuments(t *testing.T) {
 	doc := &model.Document{
 		ID: uuid.New(), Name: "test.pdf", FilePath: "/tmp/test.pdf", FileSize: 100, Status: model.StatusPending,
 	}
-	s.InsertDocument(context.Background(), doc)
+	s.InsertDocument(context.Background(), doc, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/documents", nil)
 	w := httptest.NewRecorder()
@@ -113,7 +113,7 @@ func TestGetByID_Found(t *testing.T) {
 	doc := &model.Document{
 		ID: docID, Name: "test.pdf", FilePath: "/tmp/test.pdf", FileSize: 100, Status: model.StatusPending,
 	}
-	s.InsertDocument(context.Background(), doc)
+	s.InsertDocument(context.Background(), doc, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+docID.String(), nil)
 	rctx := chi.NewRouteContext()
@@ -183,7 +183,7 @@ func TestDelete(t *testing.T) {
 	doc := &model.Document{
 		ID: docID, Name: "test.pdf", FilePath: tmpFile, FileSize: 3, Status: model.StatusPending,
 	}
-	s.InsertDocument(context.Background(), doc)
+	s.InsertDocument(context.Background(), doc, nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/documents/"+docID.String(), nil)
 	rctx := chi.NewRouteContext()
@@ -286,7 +286,7 @@ func TestProcess_Success(t *testing.T) {
 	doc := &model.Document{
 		ID: docID, Name: "test.pdf", FilePath: "/tmp/test.pdf", FileSize: 100, Status: model.StatusPending,
 	}
-	s.InsertDocument(context.Background(), doc)
+	s.InsertDocument(context.Background(), doc, nil)
 
 	body, _ := json.Marshal(map[string]string{"documentId": docID.String()})
 	req := httptest.NewRequest(http.MethodPost, "/api/documents/process", bytes.NewReader(body))
@@ -300,7 +300,7 @@ func TestProcess_Success(t *testing.T) {
 	}
 
 	// Verify document status changed to processing
-	doc, _ = s.GetDocument(context.Background(), docID)
+	doc, _ = s.GetDocument(context.Background(), docID, nil)
 	if doc.Status != model.StatusProcessing {
 		t.Errorf("status = %q, want %q", doc.Status, model.StatusProcessing)
 	}
@@ -341,7 +341,7 @@ func TestProcess_AlreadyProcessing(t *testing.T) {
 	doc := &model.Document{
 		ID: docID, Name: "test.pdf", FilePath: "/tmp/test.pdf", FileSize: 100, Status: model.StatusProcessing,
 	}
-	s.InsertDocument(context.Background(), doc)
+	s.InsertDocument(context.Background(), doc, nil)
 
 	body, _ := json.Marshal(map[string]string{"documentId": docID.String()})
 	req := httptest.NewRequest(http.MethodPost, "/api/documents/process", bytes.NewReader(body))
@@ -405,7 +405,7 @@ func TestProcess_QueueFull(t *testing.T) {
 	docID := uuid.New()
 	s.InsertDocument(context.Background(), &model.Document{
 		ID: docID, Name: "test.pdf", FilePath: "/tmp/test.pdf", FileSize: 100, Status: model.StatusPending,
-	})
+	}, nil)
 
 	body, _ := json.Marshal(map[string]string{"documentId": docID.String()})
 	req := httptest.NewRequest(http.MethodPost, "/api/documents/process", bytes.NewReader(body))
@@ -419,7 +419,7 @@ func TestProcess_QueueFull(t *testing.T) {
 	}
 
 	// Verify status reverted to pending
-	doc, _ := s.GetDocument(context.Background(), docID)
+	doc, _ := s.GetDocument(context.Background(), docID, nil)
 	if doc.Status != model.StatusPending {
 		t.Errorf("status should revert to pending, got %q", doc.Status)
 	}
@@ -460,7 +460,7 @@ func TestSearch_Success(t *testing.T) {
 	docID := uuid.New()
 	s.InsertDocument(context.Background(), &model.Document{
 		ID: docID, Name: "test.pdf", FilePath: "/tmp/test.pdf", FileSize: 100, Status: model.StatusCompleted,
-	})
+	}, nil)
 	chunkID := uuid.New()
 	s.InsertChunks(context.Background(), []model.Chunk{
 		{ID: chunkID, DocumentID: docID, Content: "test content", PageNumber: 1, ChunkIndex: 0},
@@ -898,7 +898,7 @@ func TestRefresh_Success(t *testing.T) {
 		Status:     model.StatusCompleted,
 		SourceType: model.SourceTypeWeb,
 		SourceURL:  &sourceURL,
-	})
+	}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/documents/"+docID.String()+"/refresh", nil)
 	rctx := chi.NewRouteContext()
@@ -940,7 +940,7 @@ func TestRefresh_NotWebSource(t *testing.T) {
 		FilePath: "/tmp/test.pdf",
 		FileSize: 100,
 		Status:   model.StatusCompleted,
-	})
+	}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/documents/"+docID.String()+"/refresh", nil)
 	rctx := chi.NewRouteContext()
@@ -996,7 +996,7 @@ func TestRefresh_ScraperError(t *testing.T) {
 		Status:     model.StatusCompleted,
 		SourceType: model.SourceTypeWeb,
 		SourceURL:  &sourceURL,
-	})
+	}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/documents/"+docID.String()+"/refresh", nil)
 	rctx := chi.NewRouteContext()
@@ -1086,7 +1086,7 @@ func TestTag_AddToDocument(t *testing.T) {
 	docID := uuid.New()
 	s.InsertDocument(context.Background(), &model.Document{
 		ID: docID, Name: "test.pdf", FilePath: "/tmp/test.pdf", FileSize: 100, Status: model.StatusPending,
-	})
+	}, nil)
 
 	tag := &model.Tag{ID: uuid.New(), Name: "attached", Color: "#f00"}
 	s.CreateTag(context.Background(), tag)
@@ -1120,7 +1120,7 @@ func TestTag_RemoveFromDocument(t *testing.T) {
 	docID := uuid.New()
 	s.InsertDocument(context.Background(), &model.Document{
 		ID: docID, Name: "test.pdf", FilePath: "/tmp/test.pdf", FileSize: 100, Status: model.StatusPending,
-	})
+	}, nil)
 
 	tag := &model.Tag{ID: uuid.New(), Name: "removeable", Color: "#f00"}
 	s.CreateTag(context.Background(), tag)
@@ -1363,5 +1363,134 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 	}
 	if gotUser.Email != "auth@example.com" {
 		t.Errorf("user email = %q, want 'auth@example.com'", gotUser.Email)
+	}
+}
+
+// --- Folder Handler Tests ---
+
+func TestFolders_Create(t *testing.T) {
+	s := newTestStore(t)
+	h := NewFolderHandler(s)
+
+	body := bytes.NewBufferString(`{"name":"Research"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/folders", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	folder, ok := resp["folder"].(map[string]interface{})
+	if !ok {
+		t.Fatal("response missing folder field")
+	}
+	if folder["name"].(string) != "Research" {
+		t.Errorf("name = %v, want 'Research'", folder["name"])
+	}
+}
+
+func TestFolders_List(t *testing.T) {
+	s := newTestStore(t)
+	h := NewFolderHandler(s)
+
+	ctx := context.Background()
+	root := &model.Folder{ID: uuid.New(), Name: "root"}
+	s.CreateFolder(ctx, root)
+	child := &model.Folder{ID: uuid.New(), ParentID: &root.ID, Name: "child"}
+	s.CreateFolder(ctx, child)
+
+	// List roots
+	req := httptest.NewRequest(http.MethodGet, "/api/folders", nil)
+	w := httptest.NewRecorder()
+	h.List(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	folders, ok := resp["folders"].([]interface{})
+	if !ok {
+		t.Fatal("response missing folders field")
+	}
+	if len(folders) != 1 {
+		t.Errorf("expected 1 root folder, got %d", len(folders))
+	}
+
+	// List children of root
+	req = httptest.NewRequest(http.MethodGet, "/api/folders?parent_id="+root.ID.String(), nil)
+	w = httptest.NewRecorder()
+	h.List(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	folders, _ = resp["folders"].([]interface{})
+	if len(folders) != 1 {
+		t.Errorf("expected 1 child folder, got %d", len(folders))
+	}
+}
+
+func TestFolders_Delete(t *testing.T) {
+	s := newTestStore(t)
+	h := NewFolderHandler(s)
+
+	ctx := context.Background()
+	folder := &model.Folder{ID: uuid.New(), Name: "to-delete"}
+	s.CreateFolder(ctx, folder)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/folders/"+folder.ID.String(), nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", folder.ID.String())
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	h.Delete(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	got, _ := s.GetFolder(ctx, folder.ID, nil)
+	if got != nil {
+		t.Error("folder should be deleted")
+	}
+}
+
+func TestMoveDocument(t *testing.T) {
+	s := newTestStore(t)
+	cfg := newTestConfig(t)
+	h := NewDocumentHandler(s, cfg)
+
+	ctx := context.Background()
+	folder := &model.Folder{ID: uuid.New(), Name: "target"}
+	s.CreateFolder(ctx, folder)
+
+	doc := &model.Document{
+		ID: uuid.New(), Name: "test.pdf", FilePath: "/tmp/m.pdf", FileSize: 100, Status: model.StatusPending,
+	}
+	s.InsertDocument(ctx, doc, nil)
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{"folder_id":%q}`, folder.ID.String()))
+	req := httptest.NewRequest(http.MethodPost, "/api/documents/"+doc.ID.String()+"/move", body)
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", doc.ID.String())
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	h.Move(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	got, _ := s.GetDocument(ctx, doc.ID, nil)
+	if got == nil || got.FolderID == nil || *got.FolderID != folder.ID {
+		t.Errorf("folder_id not set correctly after move, got %+v", got)
 	}
 }

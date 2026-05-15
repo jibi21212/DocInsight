@@ -25,6 +25,16 @@ func UserFromContext(ctx context.Context) *model.User {
 	return nil
 }
 
+// userIDFromContext returns a pointer to the authenticated user's ID, or nil if
+// no user is in the context (auth disabled).
+func userIDFromContext(ctx context.Context) *uuid.UUID {
+	if u := UserFromContext(ctx); u != nil {
+		id := u.ID
+		return &id
+	}
+	return nil
+}
+
 // AuthMiddleware validates Bearer tokens against the users table.
 // When auth is disabled, all requests pass through without a user.
 func AuthMiddleware(s store.Store, enabled bool) func(http.Handler) http.Handler {

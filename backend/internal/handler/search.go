@@ -51,19 +51,21 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 
+	uid := userIDFromContext(r.Context())
+
 	var results []model.SearchResult
 	var err error
 
 	switch mode {
 	case "keyword":
-		results, err = h.store.KeywordSearch(r.Context(), query, topK, req.DocumentIDs)
+		results, err = h.store.KeywordSearch(r.Context(), query, topK, req.DocumentIDs, uid, req.FolderID)
 	case "semantic":
 		queryEmb, embErr := h.embedder.EmbedSingle(r.Context(), query)
 		if embErr != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to generate query embedding")
 			return
 		}
-		results, err = h.store.MatchEmbeddings(r.Context(), queryEmb, threshold, topK, req.DocumentIDs)
+		results, err = h.store.MatchEmbeddings(r.Context(), queryEmb, threshold, topK, req.DocumentIDs, uid, req.FolderID)
 		for i := range results {
 			results[i].MatchType = "semantic"
 		}
@@ -73,7 +75,7 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "Failed to generate query embedding")
 			return
 		}
-		results, err = h.store.HybridSearch(r.Context(), queryEmb, query, threshold, topK, req.DocumentIDs)
+		results, err = h.store.HybridSearch(r.Context(), queryEmb, query, threshold, topK, req.DocumentIDs, uid, req.FolderID)
 	}
 
 	if err != nil {
@@ -83,6 +85,19 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 
 	if results == nil {
 		results = []model.SearchResult{}
+	}
+
+	// Populate snippet + highlight tokens for each result. Tokens are the
+	// same across the response so they can be safely shared.
+	const snippetWindow = 240
+	var sharedTokens []string
+	for i := range results {
+		snippet, tokens := ExtractSnippet(results[i].Content, query, snippetWindow)
+		if sharedTokens == nil {
+			sharedTokens = tokens
+		}
+		results[i].Snippet = snippet
+		results[i].HighlightTokens = tokens
 	}
 
 	tookMs := time.Since(start).Milliseconds()

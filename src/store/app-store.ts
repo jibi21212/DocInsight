@@ -2,6 +2,10 @@ import { create } from "zustand";
 import type {
   Document,
   Tag,
+  Folder,
+  AgentSession,
+  AgentMessage,
+  LLMProvider,
   SearchMode,
   SearchResult,
   SearchResponse,
@@ -21,6 +25,9 @@ interface AppState {
   searchLoading: boolean;
   searchTookMs: number;
   selectedDocumentIds: string[];
+
+  // Folders
+  selectedFolderId: string | null;
 
   // UI
   darkMode: boolean;
@@ -43,6 +50,8 @@ interface AppState {
   setSelectedDocumentIds: (ids: string[]) => void;
   clearSearch: () => void;
 
+  setSelectedFolderId: (id: string | null) => void;
+
   toggleDarkMode: () => void;
 }
 
@@ -57,6 +66,8 @@ export const useAppStore = create<AppState>((set) => ({
   searchLoading: false,
   searchTookMs: 0,
   selectedDocumentIds: [],
+
+  selectedFolderId: null,
 
   darkMode: false,
 
@@ -90,6 +101,8 @@ export const useAppStore = create<AppState>((set) => ({
   clearSearch: () =>
     set({ searchQuery: "", searchResults: [], searchTookMs: 0 }),
 
+  setSelectedFolderId: (id) => set({ selectedFolderId: id }),
+
   toggleDarkMode: () =>
     set((state) => {
       const newMode = !state.darkMode;
@@ -113,12 +126,17 @@ function authHeaders(): Record<string, string> {
 // API helper functions
 export async function fetchDocuments(
   page: number = 1,
-  pageSize: number = 20
+  pageSize: number = 20,
+  folderId?: string | null
 ): Promise<PaginatedResponse<Document>> {
-  const res = await fetch(
-    `${API_BASE}/api/documents?page=${page}&pageSize=${pageSize}`,
-    { headers: authHeaders() }
-  );
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+  });
+  if (folderId) params.set("folder_id", folderId);
+  const res = await fetch(`${API_BASE}/api/documents?${params.toString()}`, {
+    headers: authHeaders(),
+  });
   if (!res.ok) throw new Error("Failed to fetch documents");
   return res.json();
 }
@@ -166,12 +184,20 @@ export async function searchDocuments(
   topK?: number,
   threshold?: number,
   documentIds?: string[],
-  searchMode?: SearchMode
+  searchMode?: SearchMode,
+  folderId?: string | null
 ): Promise<SearchResponse> {
   const res = await fetch(`${API_BASE}/api/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ query, topK, threshold, documentIds, searchMode }),
+    body: JSON.stringify({
+      query,
+      topK,
+      threshold,
+      documentIds,
+      searchMode,
+      folder_id: folderId ?? undefined,
+    }),
   });
   if (!res.ok) {
     const err = await res.json();
@@ -313,4 +339,134 @@ export async function removeTagFromDocument(
     throw new Error(err.error ?? "Failed to remove tag");
   }
   return res.json();
+}
+
+// --- Folder API ---
+
+export async function fetchFolders(
+  parentId?: string | null
+): Promise<{ folders: Folder[] }> {
+  const params = new URLSearchParams();
+  if (parentId) params.set("parent_id", parentId);
+  const url =
+    `${API_BASE}/api/folders` +
+    (params.toString() ? `?${params.toString()}` : "");
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) throw new Error("Failed to fetch folders");
+  return res.json();
+}
+
+export async function createFolder(
+  name: string,
+  parentId?: string | null
+): Promise<{ folder: Folder }> {
+  const res = await fetch(`${API_BASE}/api/folders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ name, parent_id: parentId ?? null }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error ?? "Failed to create folder");
+  }
+  return res.json();
+}
+
+export async function deleteFolder(folderId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/folders/${folderId}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error ?? "Failed to delete folder");
+  }
+}
+
+export async function moveDocument(
+  documentId: string,
+  folderId: string | null
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/documents/${documentId}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ folder_id: folderId }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error ?? "Failed to move document");
+  }
+}
+
+// --- Agent API ---
+
+export async function fetchAgentSessions(): Promise<{ sessions: AgentSession[] }> {
+  const res = await fetch(`${API_BASE}/api/agent/sessions`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to fetch agent sessions");
+  return res.json();
+}
+
+export async function createAgentSession(input: {
+  provider: LLMProvider;
+  model: string;
+  title?: string;
+  folder_id?: string | null;
+}): Promise<{ session: AgentSession }> {
+  const res = await fetch(`${API_BASE}/api/agent/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error ?? "Failed to create session");
+  }
+  return res.json();
+}
+
+export async function deleteAgentSession(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/agent/sessions/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error ?? "Failed to delete session");
+  }
+}
+
+export async function fetchAgentMessages(
+  sessionId: string,
+): Promise<{ messages: AgentMessage[] }> {
+  const res = await fetch(
+    `${API_BASE}/api/agent/sessions/${sessionId}/messages`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) throw new Error("Failed to fetch messages");
+  return res.json();
+}
+
+export async function sendAgentMessage(
+  sessionId: string,
+  content: string,
+  llmApiKey: string,
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/agent/sessions/${sessionId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-LLM-API-Key": llmApiKey,
+        ...authHeaders(),
+      },
+      body: JSON.stringify({ content }),
+    },
+  );
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error ?? "Failed to send message");
+  }
 }

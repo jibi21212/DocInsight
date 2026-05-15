@@ -133,7 +133,8 @@ func (h *IngestHandler) Ingest(w http.ResponseWriter, r *http.Request) {
 			SourceURL:  &urlCopy,
 		}
 
-		if err := h.store.InsertDocument(r.Context(), doc); err != nil {
+		uid := userIDFromContext(r.Context())
+		if err := h.store.InsertDocument(r.Context(), doc, uid); err != nil {
 			os.Remove(htmlPath)
 			writeError(w, http.StatusInternalServerError, "Database error")
 			return
@@ -153,7 +154,7 @@ func (h *IngestHandler) Ingest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Re-fetch to get timestamps
-		refetched, err := h.store.GetDocument(r.Context(), docID)
+		refetched, err := h.store.GetDocument(r.Context(), docID, uid)
 		if err == nil && refetched != nil {
 			doc = refetched
 		}

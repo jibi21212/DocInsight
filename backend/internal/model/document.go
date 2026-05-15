@@ -31,6 +31,8 @@ type Document struct {
 	ErrorMessage *string        `json:"error_message"`
 	SourceType   string         `json:"source_type"`
 	SourceURL    *string        `json:"source_url"`
+	UserID       *uuid.UUID     `json:"user_id,omitempty"`
+	FolderID     *uuid.UUID     `json:"folder_id,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 }

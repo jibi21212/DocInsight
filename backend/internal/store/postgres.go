@@ -42,29 +42,38 @@ func (s *PostgresStore) Close() {
 	s.pool.Close()
 }
 
-func (s *PostgresStore) InsertDocument(ctx context.Context, doc *model.Document) error {
+func (s *PostgresStore) InsertDocument(ctx context.Context, doc *model.Document, userID *uuid.UUID) error {
 	sourceType := doc.SourceType
 	if sourceType == "" {
 		sourceType = model.SourceTypePDF
 	}
+	var uid *uuid.UUID
+	if userID != nil {
+		uid = userID
+	} else if doc.UserID != nil {
+		uid = doc.UserID
+	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO documents (id, name, file_path, file_size, status, page_count, source_type, source_url)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		doc.ID, doc.Name, doc.FilePath, doc.FileSize, doc.Status, doc.PageCount, sourceType, doc.SourceURL,
+		`INSERT INTO documents (id, name, file_path, file_size, status, page_count, source_type, source_url, user_id, folder_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		doc.ID, doc.Name, doc.FilePath, doc.FileSize, doc.Status, doc.PageCount, sourceType, doc.SourceURL, uid, doc.FolderID,
 	)
+	if err == nil && uid != nil {
+		doc.UserID = uid
+	}
 	return err
 }
 
-func (s *PostgresStore) GetDocument(ctx context.Context, id uuid.UUID) (*model.Document, error) {
+func (s *PostgresStore) GetDocument(ctx context.Context, id uuid.UUID, userID *uuid.UUID) (*model.Document, error) {
 	doc := &model.Document{}
 	err := s.pool.QueryRow(ctx,
 		`SELECT id, name, upload_date, page_count, status, file_path, file_size,
-		        error_message, source_type, source_url, created_at, updated_at
-		 FROM documents WHERE id = $1`, id,
+		        error_message, source_type, source_url, user_id, folder_id, created_at, updated_at
+		 FROM documents WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)`, id, userID,
 	).Scan(
 		&doc.ID, &doc.Name, &doc.UploadDate, &doc.PageCount, &doc.Status,
 		&doc.FilePath, &doc.FileSize, &doc.ErrorMessage, &doc.SourceType, &doc.SourceURL,
-		&doc.CreatedAt, &doc.UpdatedAt,
+		&doc.UserID, &doc.FolderID, &doc.CreatedAt, &doc.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -72,13 +81,27 @@ func (s *PostgresStore) GetDocument(ctx context.Context, id uuid.UUID) (*model.D
 	return doc, err
 }
 
-func (s *PostgresStore) ListDocuments(ctx context.Context, page, pageSize int, status *string) ([]model.Document, int, error) {
-	// Count query
-	countQuery := "SELECT COUNT(*) FROM documents"
-	args := []interface{}{}
+func (s *PostgresStore) ListDocuments(ctx context.Context, page, pageSize int, status *string, userID *uuid.UUID, folderID *uuid.UUID) ([]model.Document, int, error) {
+	// Count query: always include user filter as $1
+	countQuery := "SELECT COUNT(*) FROM documents WHERE ($1::uuid IS NULL OR user_id = $1)"
+	args := []interface{}{userID}
+	paramIdx := 2
 	if status != nil {
-		countQuery += " WHERE status = $1"
+		countQuery += fmt.Sprintf(" AND status = $%d", paramIdx)
 		args = append(args, *status)
+		paramIdx++
+	}
+	if folderID != nil {
+		ids, err := s.FolderDescendants(ctx, *folderID)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(ids) == 0 {
+			return []model.Document{}, 0, nil
+		}
+		countQuery += fmt.Sprintf(" AND folder_id = ANY($%d)", paramIdx)
+		args = append(args, ids)
+		paramIdx++
 	}
 
 	var total int
@@ -87,18 +110,27 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, page, pageSize int, s
 	}
 
 	// Data query
-	dataQuery := "SELECT id, name, upload_date, page_count, status, file_path, file_size, error_message, source_type, source_url, created_at, updated_at FROM documents"
-	dataArgs := []interface{}{}
-	paramIdx := 1
+	dataQuery := "SELECT id, name, upload_date, page_count, status, file_path, file_size, error_message, source_type, source_url, user_id, folder_id, created_at, updated_at FROM documents WHERE ($1::uuid IS NULL OR user_id = $1)"
+	dataArgs := []interface{}{userID}
+	dataIdx := 2
 
 	if status != nil {
-		dataQuery += fmt.Sprintf(" WHERE status = $%d", paramIdx)
+		dataQuery += fmt.Sprintf(" AND status = $%d", dataIdx)
 		dataArgs = append(dataArgs, *status)
-		paramIdx++
+		dataIdx++
+	}
+	if folderID != nil {
+		ids, err := s.FolderDescendants(ctx, *folderID)
+		if err != nil {
+			return nil, 0, err
+		}
+		dataQuery += fmt.Sprintf(" AND folder_id = ANY($%d)", dataIdx)
+		dataArgs = append(dataArgs, ids)
+		dataIdx++
 	}
 
 	dataQuery += " ORDER BY created_at DESC"
-	dataQuery += fmt.Sprintf(" LIMIT $%d OFFSET $%d", paramIdx, paramIdx+1)
+	dataQuery += fmt.Sprintf(" LIMIT $%d OFFSET $%d", dataIdx, dataIdx+1)
 
 	offset := (page - 1) * pageSize
 	dataArgs = append(dataArgs, pageSize, offset)
@@ -115,7 +147,7 @@ func (s *PostgresStore) ListDocuments(ctx context.Context, page, pageSize int, s
 		if err := rows.Scan(
 			&doc.ID, &doc.Name, &doc.UploadDate, &doc.PageCount, &doc.Status,
 			&doc.FilePath, &doc.FileSize, &doc.ErrorMessage, &doc.SourceType, &doc.SourceURL,
-			&doc.CreatedAt, &doc.UpdatedAt,
+			&doc.UserID, &doc.FolderID, &doc.CreatedAt, &doc.UpdatedAt,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -141,9 +173,12 @@ func (s *PostgresStore) UpdateDocumentPageCount(ctx context.Context, id uuid.UUI
 	return err
 }
 
-func (s *PostgresStore) DeleteDocument(ctx context.Context, id uuid.UUID) (string, error) {
+func (s *PostgresStore) DeleteDocument(ctx context.Context, id uuid.UUID, userID *uuid.UUID) (string, error) {
 	var filePath string
-	err := s.pool.QueryRow(ctx, `SELECT file_path FROM documents WHERE id = $1`, id).Scan(&filePath)
+	err := s.pool.QueryRow(ctx,
+		`SELECT file_path FROM documents WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)`,
+		id, userID,
+	).Scan(&filePath)
 	if err == pgx.ErrNoRows {
 		return "", fmt.Errorf("document not found")
 	}
@@ -151,7 +186,10 @@ func (s *PostgresStore) DeleteDocument(ctx context.Context, id uuid.UUID) (strin
 		return "", err
 	}
 
-	_, err = s.pool.Exec(ctx, `DELETE FROM documents WHERE id = $1`, id)
+	_, err = s.pool.Exec(ctx,
+		`DELETE FROM documents WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)`,
+		id, userID,
+	)
 	if err != nil {
 		return "", err
 	}
@@ -242,7 +280,9 @@ func (s *PostgresStore) InsertEmbeddings(ctx context.Context, chunkIDs []uuid.UU
 	return nil
 }
 
-func (s *PostgresStore) MatchEmbeddings(ctx context.Context, queryEmb []float32, threshold float64, limit int, docIDs []uuid.UUID) ([]model.SearchResult, error) {
+func (s *PostgresStore) MatchEmbeddings(ctx context.Context, queryEmb []float32, threshold float64, limit int, docIDs []uuid.UUID, userID *uuid.UUID, folderID *uuid.UUID) ([]model.SearchResult, error) {
+	_ = userID   // Postgres impl is a stub here; full user filtering would require updating the match_embeddings RPC.
+	_ = folderID // Same; folder scoping is enforced at the SQLite path. Postgres impl needs an RPC update.
 	vec := pgvector.NewVector(queryEmb)
 
 	var rows pgx.Rows
@@ -323,14 +363,16 @@ func (s *PostgresStore) GetUserByEmail(ctx context.Context, email string) (*mode
 	return &u, nil
 }
 
-func (s *PostgresStore) KeywordSearch(ctx context.Context, queryText string, limit int, docIDs []uuid.UUID) ([]model.SearchResult, error) {
+func (s *PostgresStore) KeywordSearch(ctx context.Context, queryText string, limit int, docIDs []uuid.UUID, userID *uuid.UUID, folderID *uuid.UUID) ([]model.SearchResult, error) {
+	_ = userID
+	_ = folderID
 	// PostgreSQL implementation would use tsvector/tsquery — stub for now
 	return []model.SearchResult{}, nil
 }
 
-func (s *PostgresStore) HybridSearch(ctx context.Context, queryEmb []float32, queryText string, threshold float64, limit int, docIDs []uuid.UUID) ([]model.SearchResult, error) {
+func (s *PostgresStore) HybridSearch(ctx context.Context, queryEmb []float32, queryText string, threshold float64, limit int, docIDs []uuid.UUID, userID *uuid.UUID, folderID *uuid.UUID) ([]model.SearchResult, error) {
 	// PostgreSQL implementation would combine pg_trgm/tsvector with pgvector — stub for now
-	return s.MatchEmbeddings(ctx, queryEmb, threshold, limit, docIDs)
+	return s.MatchEmbeddings(ctx, queryEmb, threshold, limit, docIDs, userID, folderID)
 }
 
 func (s *PostgresStore) GetProcessingDocumentIDs(ctx context.Context) ([]uuid.UUID, error) {
@@ -430,4 +472,231 @@ func (s *PostgresStore) GetDocumentTags(ctx context.Context, documentID uuid.UUI
 		tags = append(tags, t)
 	}
 	return tags, rows.Err()
+}
+
+// --- Folder Methods ---
+
+func (s *PostgresStore) CreateFolder(ctx context.Context, folder *model.Folder) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO folders (id, user_id, parent_id, name) VALUES ($1, $2, $3, $4)`,
+		folder.ID, folder.UserID, folder.ParentID, folder.Name,
+	)
+	return err
+}
+
+func (s *PostgresStore) GetFolder(ctx context.Context, id uuid.UUID, userID *uuid.UUID) (*model.Folder, error) {
+	var f model.Folder
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, user_id, parent_id, name, created_at FROM folders
+		 WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)`,
+		id, userID,
+	).Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+func (s *PostgresStore) ListFolders(ctx context.Context, userID *uuid.UUID, parentID *uuid.UUID) ([]model.Folder, error) {
+	var rows pgx.Rows
+	var err error
+	if parentID == nil {
+		rows, err = s.pool.Query(ctx,
+			`SELECT id, user_id, parent_id, name, created_at FROM folders
+			 WHERE parent_id IS NULL AND ($1::uuid IS NULL OR user_id = $1)
+			 ORDER BY name`,
+			userID,
+		)
+	} else {
+		rows, err = s.pool.Query(ctx,
+			`SELECT id, user_id, parent_id, name, created_at FROM folders
+			 WHERE parent_id = $1 AND ($2::uuid IS NULL OR user_id = $2)
+			 ORDER BY name`,
+			parentID, userID,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var folders []model.Folder
+	for rows.Next() {
+		var f model.Folder
+		if err := rows.Scan(&f.ID, &f.UserID, &f.ParentID, &f.Name, &f.CreatedAt); err != nil {
+			return nil, err
+		}
+		folders = append(folders, f)
+	}
+	return folders, rows.Err()
+}
+
+func (s *PostgresStore) DeleteFolder(ctx context.Context, id uuid.UUID, userID *uuid.UUID) error {
+	ct, err := s.pool.Exec(ctx,
+		`DELETE FROM folders WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)`,
+		id, userID,
+	)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("folder not found")
+	}
+	return nil
+}
+
+func (s *PostgresStore) MoveDocumentToFolder(ctx context.Context, docID uuid.UUID, folderID *uuid.UUID, userID *uuid.UUID) error {
+	doc, err := s.GetDocument(ctx, docID, userID)
+	if err != nil {
+		return err
+	}
+	if doc == nil {
+		return fmt.Errorf("document not found")
+	}
+	if folderID != nil {
+		folder, err := s.GetFolder(ctx, *folderID, userID)
+		if err != nil {
+			return err
+		}
+		if folder == nil {
+			return fmt.Errorf("folder not found")
+		}
+	}
+	_, err = s.pool.Exec(ctx,
+		`UPDATE documents SET folder_id = $1 WHERE id = $2 AND ($3::uuid IS NULL OR user_id = $3)`,
+		folderID, docID, userID,
+	)
+	return err
+}
+
+// --- Agent Session Methods ---
+
+func (s *PostgresStore) CreateAgentSession(ctx context.Context, session *model.AgentSession) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO agent_sessions (id, user_id, folder_id, title, provider, model)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		session.ID, session.UserID, session.FolderID, session.Title, session.Provider, session.Model,
+	)
+	return err
+}
+
+func (s *PostgresStore) GetAgentSession(ctx context.Context, id uuid.UUID, userID *uuid.UUID) (*model.AgentSession, error) {
+	var sess model.AgentSession
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, user_id, folder_id, title, provider, model, created_at FROM agent_sessions
+		 WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)`,
+		id, userID,
+	).Scan(&sess.ID, &sess.UserID, &sess.FolderID, &sess.Title, &sess.Provider, &sess.Model, &sess.CreatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &sess, nil
+}
+
+func (s *PostgresStore) ListAgentSessions(ctx context.Context, userID *uuid.UUID) ([]model.AgentSession, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, user_id, folder_id, title, provider, model, created_at FROM agent_sessions
+		 WHERE ($1::uuid IS NULL OR user_id = $1)
+		 ORDER BY created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sessions []model.AgentSession
+	for rows.Next() {
+		var sess model.AgentSession
+		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.FolderID, &sess.Title, &sess.Provider, &sess.Model, &sess.CreatedAt); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, rows.Err()
+}
+
+func (s *PostgresStore) DeleteAgentSession(ctx context.Context, id uuid.UUID, userID *uuid.UUID) error {
+	ct, err := s.pool.Exec(ctx,
+		`DELETE FROM agent_sessions WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)`,
+		id, userID,
+	)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("session not found")
+	}
+	return nil
+}
+
+func (s *PostgresStore) InsertAgentMessage(ctx context.Context, msg *model.AgentMessage) error {
+	citationsStr, err := msg.MarshalCitations()
+	if err != nil {
+		return fmt.Errorf("marshal citations: %w", err)
+	}
+	var citations *string
+	if citationsStr != "" {
+		citations = &citationsStr
+	}
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO agent_messages (id, session_id, role, content, citations) VALUES ($1, $2, $3, $4, $5)`,
+		msg.ID, msg.SessionID, msg.Role, msg.Content, citations,
+	)
+	return err
+}
+
+func (s *PostgresStore) ListAgentMessages(ctx context.Context, sessionID uuid.UUID) ([]model.AgentMessage, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, session_id, role, content, citations, created_at FROM agent_messages
+		 WHERE session_id = $1 ORDER BY created_at ASC, id ASC`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var messages []model.AgentMessage
+	for rows.Next() {
+		var msg model.AgentMessage
+		var citations *string
+		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &citations, &msg.CreatedAt); err != nil {
+			return nil, err
+		}
+		if citations != nil {
+			_ = msg.UnmarshalCitations(*citations)
+		}
+		messages = append(messages, msg)
+	}
+	return messages, rows.Err()
+}
+
+func (s *PostgresStore) FolderDescendants(ctx context.Context, folderID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `
+		WITH RECURSIVE tree(id) AS (
+			SELECT id FROM folders WHERE id = $1
+			UNION ALL
+			SELECT f.id FROM folders f JOIN tree t ON f.parent_id = t.id
+		)
+		SELECT id FROM tree
+	`, folderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

@@ -38,6 +38,7 @@ func NewRouter(s store.Store, emb embedder.Embedder, scr scraper.Scraper, broker
 	refreshHandler := handler.NewRefreshHandler(s, scr, q, cfg)
 	tagHandler := handler.NewTagHandler(s)
 	authHandler := handler.NewAuthHandler(s)
+	folderHandler := handler.NewFolderHandler(s)
 
 	r.Route("/api", func(r chi.Router) {
 		// Auth endpoints
@@ -52,6 +53,7 @@ func NewRouter(s store.Store, emb embedder.Embedder, scr scraper.Scraper, broker
 			r.Post("/ingest", ingestHandler.Ingest)
 			r.Get("/{id}", docHandler.GetByID)
 			r.Delete("/{id}", docHandler.Delete)
+			r.Post("/{id}/move", docHandler.Move)
 			r.Post("/{id}/refresh", refreshHandler.Refresh)
 			r.Post("/{id}/tags", tagHandler.AddToDocument)
 			r.Delete("/{id}/tags/{tagId}", tagHandler.RemoveFromDocument)
@@ -64,6 +66,13 @@ func NewRouter(s store.Store, emb embedder.Embedder, scr scraper.Scraper, broker
 			r.Delete("/{id}", tagHandler.Delete)
 		})
 
+		// Folders
+		r.Route("/folders", func(r chi.Router) {
+			r.Get("/", folderHandler.List)
+			r.Post("/", folderHandler.Create)
+			r.Delete("/{id}", folderHandler.Delete)
+		})
+
 		// Search
 		r.Post("/search", searchHandler.Search)
 
@@ -71,6 +80,17 @@ func NewRouter(s store.Store, emb embedder.Embedder, scr scraper.Scraper, broker
 		if broker != nil {
 			sseHandler := handler.NewSSEHandler(broker)
 			r.Get("/events", sseHandler.Stream)
+
+			agentHandler := handler.NewAgentHandler(s, emb, broker, cfg)
+			r.Route("/agent", func(r chi.Router) {
+				r.Route("/sessions", func(r chi.Router) {
+					r.Get("/", agentHandler.ListSessions)
+					r.Post("/", agentHandler.CreateSession)
+					r.Get("/{id}/messages", agentHandler.ListMessages)
+					r.Post("/{id}/messages", agentHandler.SendMessage)
+					r.Delete("/{id}", agentHandler.DeleteSession)
+				})
+			})
 		}
 	})
 

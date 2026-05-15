@@ -38,7 +38,7 @@ func (h *ProcessHandler) Process(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := h.store.GetDocument(r.Context(), docID)
+	doc, err := h.store.GetDocument(r.Context(), docID, userIDFromContext(r.Context()))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Database error")
 		return
