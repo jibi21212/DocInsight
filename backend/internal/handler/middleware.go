@@ -13,7 +13,7 @@ func CORSMiddleware(allowedOrigin string) func(http.Handler) http.Handler {
 	return cors.Handler(cors.Options{
 		AllowedOrigins:   []string{allowedOrigin},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "X-LLM-API-Key"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	})
