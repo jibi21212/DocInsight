@@ -95,4 +95,7 @@ Thumbs.db
 # ========================
 test-logs/
 docinsight.db
+docinsight.db-wal
+docinsight.db-shm
 backend/docinsight.db
+backend-server.exe
