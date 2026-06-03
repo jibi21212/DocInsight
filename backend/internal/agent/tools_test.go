@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/docinsight/backend/internal/llm"
 	"github.com/docinsight/backend/internal/model"
@@ -160,8 +161,55 @@ func TestGetDocument_Truncation(t *testing.T) {
 	if !out.Truncated {
 		t.Errorf("truncated = false, want true")
 	}
-	if len(out.Content) > getDocumentMaxContent {
-		t.Errorf("content length = %d, want <= %d", len(out.Content), getDocumentMaxContent)
+	// ASCII is one byte per rune, so the content must be cut to EXACTLY the cap.
+	// A "<= cap" assertion would also pass a regression that over-truncates.
+	if got := utf8.RuneCountInString(out.Content); got != getDocumentMaxContent {
+		t.Errorf("content rune count = %d, want exactly %d", got, getDocumentMaxContent)
+	}
+	if got := len(out.Content); got != getDocumentMaxContent {
+		t.Errorf("content byte length = %d, want exactly %d", got, getDocumentMaxContent)
+	}
+}
+
+// TestGetDocument_TruncationMultibyte guards the documented UTF-8 rule: a naive
+// byte slice at the cap would split a multibyte rune and emit invalid UTF-8.
+func TestGetDocument_TruncationMultibyte(t *testing.T) {
+	s := newTestStore(t)
+	userID := uuid.New()
+	createUser(t, s, userID)
+	// "世" is 3 bytes / 1 rune. getDocumentMaxContent is not a multiple of 3, so a
+	// raw byte slice at the cap necessarily lands mid-rune (the bug we fixed);
+	// rune-aware capping keeps exactly cap-many whole runes. (A 2-byte rune like
+	// "é" would divide evenly into an even cap and miss the bug entirely.)
+	const wide = "世"
+	big := strings.Repeat(wide, getDocumentMaxContent+500)
+	docID, _ := seedDocWithChunks(t, s, userID, "wide.pdf", []string{big}, nil)
+
+	d := newDispatcher(s, nil)
+	tc := llm.ToolCall{ID: "1", Name: ToolGetDocument, Args: json.RawMessage(fmt.Sprintf(`{"document_id":%q}`, docID.String()))}
+	result, _, _, err := d.Dispatch(context.Background(), &model.AgentSession{UserID: userID}, tc, "")
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	var out struct {
+		Content   string `json:"content"`
+		Truncated bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.Truncated {
+		t.Errorf("truncated = false, want true")
+	}
+	// Strongest signal: a byte slice would yield ~cap/3 runes ending in U+FFFD
+	// (json coerces the split trailing bytes); rune capping yields exactly
+	// cap-many identical whole runes.
+	if out.Content != strings.Repeat(wide, getDocumentMaxContent) {
+		t.Errorf("content not truncated on a rune boundary: got %d runes, want %d identical %q runes",
+			utf8.RuneCountInString(out.Content), getDocumentMaxContent, wide)
+	}
+	if !utf8.ValidString(out.Content) {
+		t.Errorf("content is not valid UTF-8")
 	}
 }
 
@@ -368,18 +416,61 @@ func TestListDocuments_FolderScope(t *testing.T) {
 func TestListDocuments_PaginationCap(t *testing.T) {
 	s := newTestStore(t)
 	userID := uuid.New()
-	createUser(t, s, userID)
+	// Seed one more than the cap so the clamp is observable: without it, all
+	// listDocumentsMaxLimit+1 docs would come back.
+	seedUserAndDocs(t, s, userID, listDocumentsMaxLimit+1, []float32{1, 0, 0, 0}, nil)
 
 	d := newDispatcher(s, nil)
 	tc := llm.ToolCall{ID: "1", Name: ToolListDocuments, Args: json.RawMessage(`{"limit":500}`)}
 
-	// Should not error — limit must be silently clamped.
 	result, _, _, err := d.Dispatch(context.Background(), &model.AgentSession{UserID: userID}, tc, "")
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if strings.Contains(result, `"error"`) {
-		t.Errorf("limit clamping should not surface as an error: %s", result)
+		t.Fatalf("limit clamping should not surface as an error: %s", result)
+	}
+	var out struct {
+		Documents []listDocsItem `json:"documents"`
+		Total     int            `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, result)
+	}
+	// limit:500 must clamp to listDocumentsMaxLimit, not return every seeded doc.
+	// Delete the clamp in dispatchListDocuments and this assertion fails.
+	if len(out.Documents) != listDocumentsMaxLimit {
+		t.Errorf("returned %d documents, want exactly %d (clamped)", len(out.Documents), listDocumentsMaxLimit)
+	}
+	// total reflects the full matching count, independent of the page cap.
+	if out.Total != listDocumentsMaxLimit+1 {
+		t.Errorf("total = %d, want %d", out.Total, listDocumentsMaxLimit+1)
+	}
+}
+
+// TestListDocuments_DefaultLimit covers the limit<=0 → default-page-size branch.
+func TestListDocuments_DefaultLimit(t *testing.T) {
+	s := newTestStore(t)
+	userID := uuid.New()
+	seedUserAndDocs(t, s, userID, listDocumentsDefaultLimit+5, []float32{1, 0, 0, 0}, nil)
+
+	d := newDispatcher(s, nil)
+	// No limit arg → must fall back to listDocumentsDefaultLimit, not return all.
+	tc := llm.ToolCall{ID: "1", Name: ToolListDocuments, Args: json.RawMessage(`{}`)}
+
+	result, _, _, err := d.Dispatch(context.Background(), &model.AgentSession{UserID: userID}, tc, "")
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	var out struct {
+		Documents []listDocsItem `json:"documents"`
+		Total     int            `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, result)
+	}
+	if len(out.Documents) != listDocumentsDefaultLimit {
+		t.Errorf("returned %d documents, want exactly %d (default)", len(out.Documents), listDocumentsDefaultLimit)
 	}
 }
 

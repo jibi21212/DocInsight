@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/docinsight/backend/internal/events"
@@ -35,9 +36,11 @@ func (m *mockEmbedder) EmbedSingle(ctx context.Context, text string) ([]float32,
 type scriptedLLM struct {
 	scripts [][]llm.StreamEvent
 	calls   int
+	apiKeys []string // records the apiKey forwarded on each StreamChat call
 }
 
 func (s *scriptedLLM) StreamChat(ctx context.Context, apiKey, modelName, system string, messages []llm.Message, tools []llm.Tool) (<-chan llm.StreamEvent, error) {
+	s.apiKeys = append(s.apiKeys, apiKey)
 	if s.calls >= len(s.scripts) {
 		return nil, fmt.Errorf("no more scripted responses")
 	}
@@ -437,12 +440,25 @@ func TestAgent_MultiToolFlow(t *testing.T) {
 		t.Errorf("citation chunk_id mismatch: got %s want %s", msg.Citations[0].ChunkID, hit)
 	}
 
+	// Every LLM call — including the nested summarize sub-call (script index 3)
+	// — must forward the user's API key, exercising the Run → Dispatch →
+	// dispatchSummarizeDocument seam end to end. scriptedLLM records each key.
+	if len(llmMock.apiKeys) != 5 {
+		t.Fatalf("recorded %d apiKeys, want 5", len(llmMock.apiKeys))
+	}
+	for i, k := range llmMock.apiKeys {
+		if k != "user-key" {
+			t.Errorf("llm call %d forwarded apiKey %q, want %q", i, k, "user-key")
+		}
+	}
+
 	// Drain published events so we can assert tool_call / tool_result fired
 	// in the expected order. The broker is buffered; reading until we have
 	// observed each expected event keeps the test deterministic.
 	expectedToolCallNames := []string{ToolSearchDocuments, ToolGetChunkContext, ToolSummarizeDocument}
 	gotToolCalls := []string{}
 	gotToolResults := []string{}
+	gotToolResultLabels := []string{}
 	gotComplete := false
 
 readLoop:
@@ -461,6 +477,8 @@ readLoop:
 			case "agent.tool_result":
 				if name, _ := data["name"].(string); name != "" {
 					gotToolResults = append(gotToolResults, name)
+					label, _ := data["display_label"].(string)
+					gotToolResultLabels = append(gotToolResultLabels, label)
 				}
 			case "agent.complete":
 				gotComplete = true
@@ -484,8 +502,28 @@ readLoop:
 			}
 		}
 	}
+	// tool_result events must arrive in call order and each must carry the
+	// friendly display_label the frontend renders inline (Phase 4 SSE contract).
 	if len(gotToolResults) != len(expectedToolCallNames) {
 		t.Errorf("tool_result events = %v, want %v", gotToolResults, expectedToolCallNames)
+	} else {
+		for i, want := range expectedToolCallNames {
+			if gotToolResults[i] != want {
+				t.Errorf("tool_result[%d] = %s, want %s", i, gotToolResults[i], want)
+			}
+			if strings.TrimSpace(gotToolResultLabels[i]) == "" {
+				t.Errorf("tool_result[%d] (%s) missing display_label", i, want)
+			}
+		}
+		if !strings.Contains(gotToolResultLabels[0], "Searching for") {
+			t.Errorf("search label = %q, want to contain %q", gotToolResultLabels[0], "Searching for")
+		}
+		if !strings.Contains(gotToolResultLabels[1], "Expanding context") {
+			t.Errorf("chunk-context label = %q, want to contain %q", gotToolResultLabels[1], "Expanding context")
+		}
+		if !strings.Contains(gotToolResultLabels[2], "Summarizing") {
+			t.Errorf("summarize label = %q, want to contain %q", gotToolResultLabels[2], "Summarizing")
+		}
 	}
 	if !gotComplete {
 		t.Errorf("did not observe agent.complete event")

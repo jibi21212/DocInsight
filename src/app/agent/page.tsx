@@ -84,12 +84,16 @@ export default function AgentPage() {
   }, []);
 
   useEffect(() => {
+    // Reset streaming state whenever the active conversation changes so in-flight
+    // tool rows / deltas / citations from the previous session don't bleed into
+    // the newly selected one (or linger after it becomes null).
+    setStreamingText("");
+    setStreamingCitations([]);
+    setStreamingTools([]);
     if (!selectedSession) {
       setMessages([]);
       return;
     }
-    setStreamingText("");
-    setStreamingCitations([]);
     fetchAgentMessages(selectedSession.id)
       .then((res) => setMessages(res.messages ?? []))
       .catch((err) => setError(String(err)));
@@ -204,6 +208,8 @@ export default function AgentPage() {
     setInput("");
     setSending(true);
     setError(null);
+    // Start the new turn with a clean streaming slate.
+    setStreamingTools([]);
 
     try {
       await sendAgentMessage(selectedSession.id, userMsg.content, key);

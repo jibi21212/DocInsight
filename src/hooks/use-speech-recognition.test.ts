@@ -13,6 +13,7 @@ class FakeRecognition extends EventTarget {
   onstart: ((ev: Event) => unknown) | null = null;
   startCalls = 0;
   stopCalls = 0;
+  abortCalls = 0;
   start() {
     this.startCalls++;
     queueMicrotask(() => this.onstart?.(new Event("start")));
@@ -22,7 +23,10 @@ class FakeRecognition extends EventTarget {
     queueMicrotask(() => this.onend?.(new Event("end")));
   }
   abort() {
-    this.stopCalls++;
+    this.abortCalls++;
+    // Real abort() also fires onend; modeling it lets the unmount test prove the
+    // hook detaches handlers before aborting (so this fires into the void).
+    queueMicrotask(() => this.onend?.(new Event("end")));
   }
   /** Helper for tests to push a synthetic result event. */
   emitResult(parts: Array<{ transcript: string; isFinal: boolean }>): void {
@@ -172,7 +176,7 @@ describe("useSpeechRecognition", () => {
     expect(result.current.error).toBeNull();
   });
 
-  it("stops native recognition when the hook unmounts mid-listen", async () => {
+  it("aborts native recognition and detaches handlers when the hook unmounts mid-listen", async () => {
     const { useSpeechRecognition } = await import("./use-speech-recognition");
     const { result, unmount } = renderHook(() => useSpeechRecognition());
 
@@ -181,9 +185,27 @@ describe("useSpeechRecognition", () => {
       await Promise.resolve();
     });
     expect(lastInstance?.startCalls).toBe(1);
+    const inst = lastInstance!;
 
     unmount();
-    expect(lastInstance?.stopCalls).toBe(1);
+
+    // Unmount must abort() (synchronous, discards pending results), NOT stop()
+    // (which defers onend and can still deliver one final result).
+    expect(inst.abortCalls).toBe(1);
+    expect(inst.stopCalls).toBe(0);
+    // Handlers must be detached so the deferred onend can't setState on the
+    // now-unmounted hook.
+    expect(inst.onend).toBeNull();
+    expect(inst.onresult).toBeNull();
+    expect(inst.onerror).toBeNull();
+    expect(inst.onstart).toBeNull();
+
+    // Flush the microtask abort() queued; with handlers detached it's a no-op
+    // and must not throw.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(inst.abortCalls).toBe(1);
   });
 
   it("reset() clears transcript and error but does not stop", async () => {

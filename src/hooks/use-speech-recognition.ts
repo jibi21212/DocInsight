@@ -78,13 +78,20 @@ export function useSpeechRecognition(
     setIsSupported(!!found);
   }, []);
 
-  // Cleanup any in-flight recognition on unmount.
+  // Cleanup any in-flight recognition on unmount. Detach the handlers BEFORE
+  // tearing down so the asynchronous onend can't call setState on an unmounted
+  // hook, and use abort() (synchronous, discards any pending result) rather than
+  // stop() (which defers onend and can still deliver one final result).
   useEffect(() => {
     return () => {
       const r = recognitionRef.current;
       if (r) {
+        r.onresult = null;
+        r.onerror = null;
+        r.onend = null;
+        r.onstart = null;
         try {
-          r.stop();
+          r.abort();
         } catch {
           // ignore — recognizer may already be stopped
         }

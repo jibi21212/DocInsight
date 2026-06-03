@@ -435,3 +435,90 @@ This batch did not add new HTTP endpoints. The new agent tools all dispatch thro
 - `295d093` — Phase 3: voice input via Web Speech API
 - `38aea0f` — Phase 4: render tool calls inline in agent UI
 
+---
+
+## Review remediation: tests + robustness (2026-06-03)
+
+A deep review of the already-committed voice + agent-tools work (4 parallel
+read-only review agents, every load-bearing finding independently re-verified
+against source) found **no critical / security / data-leak issues** — tenant
+scoping, arg validation, clamps, the nested-summarize key forwarding + bounding,
+XSS safety, and citation parsing are all sound. What it surfaced: a few
+under-asserting tests, some latent fragilities, and one silently-dropped feature.
+This pass fixed the test gaps + robustness items (no new features).
+
+### Test count progression
+- Pre: backend **231** / 0 / 0, frontend **14** / 0 / 0
+- After: backend **233** / 0 / 0 (+`TestGetDocument_TruncationMultibyte`,
+  +`TestListDocuments_DefaultLimit`); frontend **14** / 0 / 0 (3 tests
+  *strengthened*, none added). `go vet ./...` clean; `next build` clean.
+
+### Byte-vs-rune truncation — the documented rule, finally enforced
+- `get_document`, `summarize_document`, and both snippet builders sliced content
+  by **bytes** (`s[:8000]`), which can split a multibyte rune. Mitigated in
+  practice only because `json.Marshal` coerces invalid UTF-8 to U+FFFD (no crash,
+  no invalid JSON) — but it violated the rune-clamp rule this file already
+  documents for snippets.
+- Fixed with one helper `capRunes(s, n) (string, bool)` in `tools.go`, used at all
+  four sites. Caps by **rune count**, never splits a rune; the ASCII path is
+  allocation-free (`len(s) <= n` short-circuit, since byte length bounds rune
+  count).
+- **Test trap I hit:** my first multibyte test used "é" (2 bytes). The cap (8000)
+  is even, so a byte slice lands *exactly* on a rune boundary — that test would
+  have passed against the buggy code. Use a **3-byte** rune ("世"): `8000 % 3 ≠ 0`
+  guarantees a mid-rune split, so the test actually discriminates. Assert exact
+  equality to `strings.Repeat(wide, cap)`, not just `utf8.ValidString` (which is
+  tautologically true once json has coerced the split bytes to U+FFFD).
+
+### Tests that passed even when the code was broken
+- `TestListDocuments_PaginationCap` seeded **zero** docs and only checked "no
+  error" — the 100-cap was dead-code-removable with the test still green. Now
+  seeds `maxLimit+1` and asserts exactly `maxLimit` returned + `total` reflects
+  the full matching count. Added `TestListDocuments_DefaultLimit` for the
+  `limit<=0 → default` branch.
+- `TestGetDocument_Truncation` asserted `len <= cap` (an over-truncation to 0
+  would pass). Now asserts exact `== cap` (rune count and byte length).
+- `TestAgent_MultiToolFlow` asserted tool_result **counts** only. Now asserts
+  tool_result **names in order** + each event's `display_label` (the Phase-4 SSE
+  contract the frontend renders). Added an `apiKeys []string` recorder to
+  `scriptedLLM` so the integration test proves the user's key threads through
+  `Run → Dispatch → dispatchSummarizeDocument` (previously only the isolated
+  `capturingLLM` unit test observed key forwarding).
+
+### Speech-hook unmount cleanup
+- The unmount effect called `r.stop()` (async — defers `onend`, can still deliver
+  a final result) and never detached handlers, so the deferred `onend` ran
+  `setState` on the unmounted hook. Now detaches `onresult/onerror/onend/onstart`
+  **before** calling `r.abort()` (synchronous, discards pending results).
+- The old unmount test couldn't catch this: `FakeRecognition.abort()` bumped the
+  same `stopCalls` counter as `stop()`. Gave `abort()` a distinct `abortCalls`
+  counter; the test now asserts `abortCalls===1 && stopCalls===0` and that all
+  four handlers are null post-unmount.
+
+### streamingTools session-switch leak
+- `/agent` `page.tsx` reset `streamingText`/`streamingCitations` on a session
+  change but not `streamingTools` — switching conversations mid-stream left stale
+  tool rows rendering under the new thread. Now resets all three streaming states
+  at the top of the session-change effect (covers the `→ null` case too) and
+  clears `streamingTools` at the start of each send. No Vitest added: `page.tsx`
+  has no unit harness and standing one up is disproportionate; covered by the
+  Claude Preview smoke pattern, consistent with the rest of the page.
+
+### Still open — reviewed, deliberately deferred (not in this scope)
+- **"Tools used (N)" persisted footer never built.** Phase 4 of the plan
+  specified a collapsible footer on each completed assistant message + a Vitest
+  test for it. It was silently descoped — tool history is ephemeral and vanishes
+  on the `agent.complete` refetch. Would need tool metadata persisted on
+  `AgentMessage` (backend + `agent-message.tsx` + the promised test).
+- **Positional `tool_result`→row matching** (`page.tsx`): flips "most recent
+  not-done" with no name/id correlation. Fine under serial dispatch; mismatches
+  if an SSE `tool_result` drops (which the broker tolerates by design). Fix = a
+  stable `tool_call_id` carried on both events, matched on it.
+- **Permission-error auto-clear** ("clears after 5s" in the plan) is unimplemented
+  — the error persists until the next `start()`.
+- **Hook mock fidelity**: `FakeRecognition.emitResult` hard-codes `resultIndex:0`,
+  so it doesn't model Chrome's cumulative-result/`resultIndex` advance.
+- **Unreachable `dispatchErr` branch** (`agent.go`) skips the `agent.tool_result`
+  event; harmless today (all tools return nil err) but would strand a UI row if a
+  tool ever returned a real error.
+

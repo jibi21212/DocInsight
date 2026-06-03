@@ -177,10 +177,7 @@ func (d *ToolDispatcher) dispatchSearch(ctx context.Context, session *model.Agen
 	items := make([]searchResultItem, 0, len(results))
 	cites := make([]model.Citation, 0, len(results))
 	for _, r := range results {
-		snippet := r.Content
-		if len(snippet) > SnippetMaxLen {
-			snippet = snippet[:SnippetMaxLen]
-		}
+		snippet, _ := capRunes(r.Content, SnippetMaxLen)
 		items = append(items, searchResultItem{
 			ChunkID:      r.ChunkID.String(),
 			DocumentID:   r.DocumentID.String(),
@@ -241,12 +238,7 @@ func (d *ToolDispatcher) dispatchGetDocument(ctx context.Context, session *model
 		}
 		b.WriteString(c.Content)
 	}
-	content := b.String()
-	truncated := false
-	if len(content) > getDocumentMaxContent {
-		content = content[:getDocumentMaxContent]
-		truncated = true
-	}
+	content, truncated := capRunes(b.String(), getDocumentMaxContent)
 
 	out := map[string]any{
 		"title":     doc.Name,
@@ -316,10 +308,7 @@ func (d *ToolDispatcher) dispatchSummarizeDocument(ctx context.Context, session 
 		}
 		bodyBuf.WriteString(c.Content)
 	}
-	body := bodyBuf.String()
-	if len(body) > getDocumentMaxContent {
-		body = body[:getDocumentMaxContent]
-	}
+	body, _ := capRunes(bodyBuf.String(), getDocumentMaxContent)
 
 	if d.llm == nil {
 		return `{"error":"llm client unavailable"}`, nil, "", nil
@@ -482,10 +471,7 @@ func (d *ToolDispatcher) dispatchGetChunkContext(ctx context.Context, session *m
 		if c.ChunkIndex < lo || c.ChunkIndex > hi {
 			continue
 		}
-		snippet := c.Content
-		if len(snippet) > SnippetMaxLen {
-			snippet = snippet[:SnippetMaxLen]
-		}
+		snippet, _ := capRunes(c.Content, SnippetMaxLen)
 		items = append(items, chunkContextItem{
 			ChunkID:    c.ID.String(),
 			ChunkIndex: c.ChunkIndex,
@@ -507,6 +493,24 @@ func (d *ToolDispatcher) dispatchGetChunkContext(ctx context.Context, session *m
 	}
 	payload, _ := json.Marshal(out)
 	return string(payload), cites, "Expanding context", nil
+}
+
+// capRunes truncates s to at most maxRunes runes without splitting a multibyte
+// rune, returning the (possibly shortened) string and whether it was cut. A raw
+// byte slice at an arbitrary offset can land mid-rune and yield invalid UTF-8
+// (json.Marshal then coerces it to U+FFFD); capping by rune count avoids that.
+// See LESSONS_LEARNED.md — the UTF-8 window-boundary rule.
+func capRunes(s string, maxRunes int) (string, bool) {
+	// Byte length is an upper bound on rune count: if the bytes fit, the runes
+	// fit too — fast path with no allocation.
+	if len(s) <= maxRunes {
+		return s, false
+	}
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s, false
+	}
+	return string(r[:maxRunes]), true
 }
 
 // jsonEscape escapes a string so it can be safely embedded in a JSON string
