@@ -3,9 +3,72 @@
 Persistent tracking file for bugs found, decisions made, and pitfalls to avoid.
 Updated as the project evolves; survives conversation compaction.
 
+> **⚠️ Architecture changed (2026-06): web app → Wails desktop app.** Everything
+> below the "Desktop migration" section was written while DocInsight was a
+> 3-process web app (Next.js + chi HTTP API + SSE + Python sidecar). The Go
+> *core* lessons (SQLite triggers, RE2 regex, worker pool, FTS5, RRF, snippets,
+> folders, the agent loop, LLM SSE parsing, OCR, crawling) are **still accurate
+> and still apply** — that code was reused unchanged. But anything about the
+> **transport or shell** is historical: there is no longer a Next.js frontend,
+> no chi router, no REST endpoints, no CORS, no SSE endpoint, no API-key
+> auth/login, and no `NEXT_PUBLIC_API_URL`. Read the **Desktop migration**
+> section next for the current model; treat the older transport/auth notes as a
+> record of what *was*. The per-phase log is in [`MIGRATION_LOG.md`](MIGRATION_LOG.md).
+
 ---
 
-## Architecture
+## Desktop migration: web app → Wails v2 (2026-06)
+
+DocInsight was converted from a 3-terminal web app into a **single Wails v2
+(v2.12.0) desktop binary** (`build/bin/docinsight.exe`, native WebView2 window
+on Windows). The Go core under `internal/` was reused **unchanged**; what
+changed is the transport, the entry point, and the frontend toolchain.
+
+### What was removed vs the old app
+- **Next.js** frontend → Vite + React 19 + Tailwind 4 + Zustand + react-router-dom (HashRouter) under `frontend/`.
+- **chi HTTP server + REST endpoints + CORS** → **Wails bound methods** on `*App` (typed Go methods exposed to JS), split by domain across `app_documents.go`, `app_ingest.go`, `app_search.go`, `app_tags.go`, `app_folders.go`, `app_agent.go`.
+- **Server-Sent Events** → **Wails runtime events** (`runtime.EventsEmit` → JS `EventsOn`). `app.go`'s `forwardEvents` bridges the existing `events.Broker` to the runtime, so the Go core's event-publishing code didn't change.
+- **API-key auth + login page** → a single implicit **local user** (`local@docinsight.app`), provisioned once on first run. The multi-tenant schema is retained (records carry `user_id`) but there is **no auth**; `a.userID` is threaded through every store call exactly as before.
+- **3-terminal startup** → one process. `main.go` embeds `frontend/dist` and binds `App`; `app.go` `startup` wires deps, spawns the sidecar, provisions the user, recovers jobs; `shutdown` tears it all down.
+- **`NEXT_PUBLIC_API_URL`** and the whole HTTP base-URL concept → gone; the frontend calls Go in-process.
+
+### Go-native ONNX embeddings: evaluated and dropped
+- The tempting "fully self-contained, no Python" path was to run `all-MiniLM-L6-v2` in-process via a Go ONNX runtime. It was **rejected**: the viable Go ONNX bindings pull in a **CGo/native** dependency (onnxruntime), which reintroduces a C toolchain requirement — the exact thing the desktop build was trying to avoid (modernc SQLite is pure Go specifically so there's **no C compiler** in the build).
+- **Decision:** keep the **Python sidecar**, but have the app **own its lifecycle**. On startup `app_sidecar.go` picks a free localhost port, spawns the venv's `python -m uvicorn main:app`, polls `/health` (up to 60s — first start loads the model), points `embedder.HTTPEmbedder` at it, and kills it on shutdown. To the user it's invisible; to the build it's C-free. Same model, same 384-dim vectors, zero core changes.
+
+### Sidecar supervision gotchas (`app_sidecar.go`)
+- **Locate, don't assume.** `locateSidecarDir` tries `EMBEDDING_SIDECAR_DIR`, then dirs next to the executable (`embedding-sidecar`, `backend/embedding-sidecar`), then the dev tree relative to cwd. This is what lets `wails dev` (cwd = repo) and a future bundled exe (sidecar next to the binary) both work.
+- **Free port, not 8000.** Hardcoding `:8000` would collide with a stray dev sidecar or another app. `freePort()` binds `127.0.0.1:0`, reads the assigned port, closes the listener, and passes it to uvicorn — then `cfg.EmbeddingSidecarURL` is overwritten with the real URL before the embedder is constructed.
+- **Non-fatal startup.** If the sidecar fails (no venv, missing deps), the window **still opens**; the app emits a `sidecar.error` runtime event and logs "run setup.ps1". Ingest/search simply stay broken until it's up, rather than the whole app refusing to launch.
+- **127.0.0.1 only.** uvicorn is bound to loopback, so the sidecar is never reachable off-host — important for the "local-only, no server" privacy story.
+
+### Bindings ↔ frontend type mismatch (the `time.Time` / `uuid.UUID` trap)
+- Wails' TS generator emits `number[]` for `uuid.UUID` and `any` for `time.Time`, and prints a harmless `Not found: time.Time` during generation. But at **runtime** those fields marshal to JSON **strings**.
+- **Fix:** the frontend ignores the generated models for these shapes. `frontend/src/lib/types.ts` hand-types every id and date as `string`, and `frontend/src/lib/api.ts` casts binding results to those types. Don't try to "fix" the generator — the runtime JSON is correct, only the generated *types* are wrong.
+- `api.ts` deliberately re-exposes the **same function names and return shapes** the old fetch-based Zustand store had (`fetchDocuments`, `searchDocuments`, `sendAgentMessage`, …). That's why the ported pages/components needed only mechanical edits (see `MIGRATION_LOG.md` Phase 3), not rewrites.
+
+### Binding-method conventions (held across all `app_*.go`)
+- IDs are `string` params parsed with `uuid.Parse`; empty string → `nil` UUID = "none" (e.g. empty `folderID` lists across all folders).
+- `a.userID` passed to every store call that accepts a `userID`; **tags are global** and intentionally take none (mirrors the original handler).
+- Wrong-user and not-found **collapse to a generic "not found"** so existence isn't leaked.
+- No HTTP/JSON envelopes — methods return typed values or domain-prefixed in-file structs (`DocumentsPage`, `DocumentDetail`, `SearchResponse`, …). Errors wrapped with `fmt.Errorf` (`%w` where there's a cause).
+- The snippet builder and `searchStopwords` were **re-implemented** in `app_search.go` (copied, not imported) because the originals are unexported in `internal/handler`, which is off-limits to the root `main` package. Kept byte-for-byte faithful.
+
+### Native file picker replaces multipart upload
+- `AddDocuments` (in `app_documents.go`) uses `runtime.OpenMultipleFilesDialog` (PDF filter) instead of an HTTP multipart upload. A cancelled dialog returns an empty result + nil error (the frontend treats a 0-doc result as a no-op). Per file: `.pdf` check, size check vs `MaxUploadSizeMB`, copy into the data dir as `<uuid>.pdf`, insert, enqueue. The contract ingests **and** enqueues, so the frontend dropped its separate `processDocument` trigger.
+
+### Data lives in `%APPDATA%\DocInsight`, set at startup
+- `config.Load()` still defaults `SQLitePath=./docinsight.db` / `UploadDir=./uploads`, but `app.go` `startup` **overrides** both to live under `os.UserConfigDir()/DocInsight` before opening the store — so the installed app writes to the user's profile, not next to the exe (which may be read-only / Program Files). The old config defaults remain only as the bare-process fallback.
+
+### Tooling / build
+- **`setup.ps1`** is the one-time, idempotent bootstrap (PowerShell): sidecar venv + requirements, `go mod download`, install the **Wails CLI pinned to v2.12.0**, `npm install` in `frontend/`. Dev: `wails dev`. Build: `wails build` → `build/bin/docinsight.exe`.
+- **Tests split:** `go test ./internal/...` (core) + `go test .` (the binding layer at the repo root); `go vet ./internal/... .`. Frontend: `cd frontend; npm run build` + `npx tsc --noEmit`.
+- **Frontend unit tests are not yet re-ported.** The old Vitest suite (happy-dom, `vitest.config.mts`) was removed with the old `src/`. The covered hooks/components were copied into `frontend/` verbatim, so re-porting is mostly path edits + picking a Vitest version compatible with Vite 6 / React 19.
+- **Dead code:** `cmd/server` (old HTTP entry) and `internal/server` (chi routes) still exist but are unused by the desktop app — safe to remove later.
+
+---
+
+## Architecture (historical — pre-desktop; see "Desktop migration" above)
 
 | Decision | Why |
 |---|---|

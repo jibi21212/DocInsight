@@ -1,9 +1,11 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # ========================
-# Node.js / Next.js
+# Node.js / frontend
 # ========================
-/node_modules
+# Match node_modules at any depth (root + frontend/) — the old anchored
+# /node_modules missed the Wails frontend/node_modules.
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*

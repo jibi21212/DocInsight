@@ -1,18 +1,20 @@
 # DocInsight
 
-**Semantic document search with a bring-your-own-key AI agent.**
+**A private, offline-first desktop app for semantic document search with a
+bring-your-own-key AI agent.**
 
 DocInsight ingests your PDFs and web pages, indexes them for meaning-based search
 (not just keywords), and lets an AI agent answer questions grounded in your own
-library — with inline citations back to the source chunk. You supply your own
-Anthropic or OpenAI API key; it is forwarded per request and **never stored on
-the server**.
+library — with inline citations back to the source chunk. It runs as a **single
+native desktop application** (Wails v2 + WebView2): one window, one binary, your
+data on your machine. You supply your own Anthropic or OpenAI API key; it is
+forwarded per request and **never stored**.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Next.js](https://img.shields.io/badge/Next.js-16.2-black?logo=next.js)
+![Wails](https://img.shields.io/badge/Wails-v2.12-DF0000?logo=wails&logoColor=white)
 ![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-233%20backend%20%2F%2014%20frontend-success)
+![Platform](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)
 
 ---
 
@@ -23,7 +25,6 @@ the server**.
 - [Architecture](#architecture)
 - [Tech stack](#tech-stack)
 - [Getting started](#getting-started)
-- [Configuration](#configuration)
 - [Testing](#testing)
 - [How the agent works](#how-the-agent-works)
 - [Project structure](#project-structure)
@@ -35,9 +36,10 @@ the server**.
 ## Features
 
 ### Ingestion & search
-- **Bulk PDF upload** with a six-stage processing pipeline (extract → chunk →
-  store → embed → index → complete), plus an **OCR fallback** (Tesseract) that
-  kicks in automatically when a PDF's extracted text is too sparse.
+- **Bulk PDF import** via a native file picker, with a six-stage processing
+  pipeline (extract → chunk → store → embed → index → complete) and an **OCR
+  fallback** (Tesseract) that kicks in automatically when a PDF's extracted text
+  is too sparse.
 - **Web-page ingestion** — paste URLs to fetch and index article content, with
   optional **recursive same-domain crawling**.
 - **Hybrid search** — full-text (SQLite FTS5/BM25) and semantic (cosine
@@ -57,15 +59,21 @@ the server**.
 - **Inline citations** — answers cite the exact source chunk
   (`<cite chunk="…"/>`), rendered as numbered, expandable sources.
 - **Live tool status** — the UI shows "Searching for…", "Reading…",
-  "Summarizing…" as the agent works, streamed over Server-Sent Events.
-- **Voice input** — dictate queries and prompts via the browser's Web Speech
-  API (100% client-side; no audio reaches the server).
+  "Summarizing…" as the agent works, streamed over Wails runtime events.
+- **Voice input** — dictate queries and prompts via the Web Speech API
+  (handled by the WebView2 layer; no audio reaches DocInsight).
 
-### Platform
-- **Multi-tenant** API-key auth (opt-in); every record is scoped to a user.
-- **Real-time updates** over SSE for processing and search events.
-- **Pluggable storage** — zero-setup **SQLite** for local development,
-  **PostgreSQL/pgvector** for production (auto-selected via `DATABASE_URL`).
+### Desktop platform
+- **Single native window** — a Go core and a React UI rendered in WebView2. No
+  browser, no localhost server to start, no ports to manage.
+- **Self-contained startup** — on launch the app spawns its embedding sidecar,
+  health-checks it, provisions a local user, and recovers any in-flight jobs;
+  on close it tears everything down.
+- **Local-first storage** — everything lives under `%APPDATA%\DocInsight`
+  (a `modernc.org/sqlite` database — pure Go, no CGo — plus an `uploads`
+  folder). Nothing is uploaded anywhere.
+- **Real-time updates** via Wails runtime events for processing and agent
+  streaming.
 - **Export** search results to JSON or CSV.
 
 ---
@@ -77,49 +85,65 @@ the server**.
 | ![Document library](docs/screenshots/dashboard.jpg) | ![Semantic search](docs/screenshots/search.jpg) |
 | **Document library** — mixed PDF & web sources, processed and ready to search | **Hybrid search** — ranked results with highlighted matches and citations |
 | ![Grounded AI agent](docs/screenshots/agent.jpg) | ![Add content](docs/screenshots/upload.jpg) |
-| **AI agent** — grounded in your library, bring-your-own key | **Add content** — upload PDFs or ingest &amp; crawl web pages |
+| **AI agent** — grounded in your library, bring-your-own key | **Add content** — import PDFs or ingest &amp; crawl web pages |
 
 ---
 
 ## Architecture
 
-DocInsight is a three-tier system: a Next.js frontend, a Go API that owns all
-ingestion/search/agent logic, and a small Python sidecar dedicated to producing
-embeddings.
+DocInsight is a **Wails v2 desktop app**: a Go core and a React/Tailwind UI
+rendered in a native **WebView2** window. The frontend never makes HTTP calls —
+it invokes Go directly through **generated Wails bindings** and receives push
+updates through **Wails runtime events**. The only network process is a small,
+locally-spawned Python sidecar that produces embeddings.
 
 ```
-                      ┌────────────────────────────┐
-    Browser  ───────▶ │  Next.js 16 (App Router)   │  :3000
-                      │  React 19 · Tailwind 4     │
-                      └─────────────┬──────────────┘
-                                    │  REST + SSE
-                                    ▼
-                      ┌────────────────────────────┐
-                      │  Go API  ·  chi router     │  :8080
-                      │  ────────────────────────  │
-                      │  ingest · chunk · OCR      │
-                      │  hybrid search (FTS5 + cos)│
-                      │  SSE broker · agent loop   │
-                      └───┬────────────┬───────┬───┘
-              embeddings  │       data │       │  chat completions
-                          ▼            ▼       ▼
-                ┌──────────────┐  ┌─────────┐  ┌────────────────────┐
-                │ Python       │  │ SQLite  │  │ Anthropic / OpenAI │
-                │ FastAPI      │  │   or    │  │  (your API key,    │
-                │ MiniLM-L6-v2 │  │ Postgres│  │   forwarded only)  │
-                │    :8000     │  └─────────┘  └────────────────────┘
-                └──────────────┘
+        ┌────────────────────────────────────────────────────────────┐
+        │                    docinsight.exe  (one process)             │
+        │                                                              │
+        │   ┌──────────────────────────┐    bindings   ┌───────────┐  │
+        │   │  WebView2 window          │  ◀─────────▶  │  Go core  │  │
+        │   │  React 19 · Tailwind 4    │   (App.*())   │           │  │
+        │   │  Zustand · react-router   │               │ ingest    │  │
+        │   │                           │  ◀──────────  │ chunk·OCR │  │
+        │   │  Dashboard · Search       │   runtime     │ hybrid    │  │
+        │   │  Agent · Add · Detail     │   events      │ search    │  │
+        │   └──────────────────────────┘               │ agent loop│  │
+        │                                               └─────┬─────┘  │
+        └─────────────────────────────────────────────────── │ ───────┘
+                              embeddings  │            data │  │  chat completions
+                            (spawned + supervised)          │  │  (your API key)
+                          ┌───────────────▼──┐  ┌───────────▼┐ │ ┌────────────────────┐
+                          │ Python sidecar   │  │  SQLite    │ └▶│ Anthropic / OpenAI │
+                          │ FastAPI·uvicorn  │  │ %APPDATA%\ │   │  (forwarded only,  │
+                          │ MiniLM-L6-v2 384d│  │ DocInsight │   │   never persisted) │
+                          └──────────────────┘  └────────────┘   └────────────────────┘
 ```
 
-- **Frontend** (`/src`) — App Router pages for `/`, `/upload`, `/search`,
-  `/agent`, `/documents/[id]`, and `/login`. State via Zustand; SSE via an
-  `EventSource` hook with auto-reconnect.
-- **Backend** (`/backend`) — chi router, a non-blocking SSE event broker, a
-  channel-based job queue with crash recovery, and a brute-force cosine + FTS5
-  hybrid search engine. The agent loop runs the LLM tool-calling cycle (max 5
-  iterations) and extracts citations from the final answer.
-- **Embedding sidecar** (`/backend/embedding-sidecar`) — a FastAPI service that
-  serves `all-MiniLM-L6-v2` embeddings. **Required** for ingestion and search.
+- **Go core** (`internal/`, module `github.com/docinsight/backend` at the repo
+  root) — the chunker, worker pool, channel job queue (with crash recovery),
+  scraper/crawler, OCR, the `modernc.org/sqlite` store (FTS5 + brute-force
+  cosine + RRF), the LLM clients, and the agent loop. **Reused unchanged** from
+  the previous web version.
+- **Bindings layer** (`app_*.go` at the repo root) — exported methods on the
+  `App` struct that Wails exposes to JavaScript, split by domain
+  (`app_documents.go`, `app_ingest.go`, `app_search.go`, `app_tags.go`,
+  `app_folders.go`, `app_agent.go`). `app.go` does startup/shutdown, dependency
+  wiring, local-user provisioning, and bridges the internal event broker to
+  `runtime.EventsEmit`. `app_sidecar.go` supervises the Python process.
+- **Frontend** (`frontend/`) — Vite + React 19 + Tailwind 4 + Zustand +
+  react-router-dom (HashRouter). It calls Go through the generated bindings
+  (`frontend/wailsjs/go/main/App`) wrapped by `frontend/src/lib/api.ts`, and
+  consumes streaming/processing events via `frontend/src/hooks/use-events.ts`.
+- **Embedding sidecar** (`backend/embedding-sidecar/`) — a FastAPI/uvicorn
+  service serving `all-MiniLM-L6-v2` (384-dim) embeddings. The app picks a free
+  localhost port, spawns the venv's `python -m uvicorn main:app`, waits for
+  `/health`, and kills it on shutdown. **Required** for ingestion and search.
+
+> **Why a Python sidecar and not pure Go?** A CGo-free, Go-native ONNX
+> embedding path was evaluated and dropped during the desktop migration — the
+> sidecar keeps the build C-compiler-free and reuses the exact model the
+> original app shipped. See [`MIGRATION_LOG.md`](MIGRATION_LOG.md).
 
 ---
 
@@ -127,14 +151,15 @@ embeddings.
 
 | Layer | Technologies |
 | --- | --- |
-| Frontend | Next.js 16.2 (App Router), React 19, TypeScript, Tailwind CSS 4, Zustand, lucide-react |
-| Backend | Go (chi router), `modernc.org/sqlite`, Server-Sent Events |
+| Shell | Wails v2.12.0 · WebView2 (native window) |
+| Frontend | React 19, TypeScript, Tailwind CSS 4, Zustand, react-router-dom, lucide-react, Vite 6 |
+| Core | Go 1.23, `modernc.org/sqlite` (pure Go, no CGo), channel-based worker pool |
 | Search | SQLite FTS5 (BM25) + brute-force cosine, fused with RRF |
-| Embeddings | Python FastAPI sidecar · `all-MiniLM-L6-v2` |
+| Embeddings | Python FastAPI/uvicorn sidecar · `all-MiniLM-L6-v2` (384-dim) |
 | LLM | Anthropic Messages API · OpenAI Chat Completions (streaming, BYO key) |
-| Storage | SQLite (dev) · PostgreSQL/pgvector (prod) |
+| Storage | SQLite under `%APPDATA%\DocInsight` |
 | OCR | Tesseract (optional) |
-| Tests | Go `testing` · Vitest + Testing Library + happy-dom |
+| Tests | Go `testing` (core + binding layer) |
 
 ---
 
@@ -144,107 +169,85 @@ embeddings.
 - **Go** 1.23+
 - **Node.js** 20+ and npm
 - **Python** 3.11+ (for the embedding sidecar)
+- **WebView2** runtime — preinstalled on Windows 11
 - **Tesseract** (optional, for OCR of scanned PDFs)
 
-### Installation
+No C compiler is required.
 
-```bash
-# 1. Frontend dependencies
-npm install
+### One-time setup
 
-# 2. Backend dependencies
-cd backend && go mod download && cd ..
+From the repo root, in PowerShell:
 
-# 3. Embedding sidecar (one-time)
-cd backend/embedding-sidecar
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cd ../..
+```powershell
+./setup.ps1
 ```
 
-### Running locally
+This is idempotent. It provisions the Python sidecar's virtualenv + requirements
+(the first run downloads the embedding model's dependencies and can take a few
+minutes), downloads Go module dependencies, installs the **Wails v2 CLI**
+(`v2.12.0`), and installs the frontend's npm dependencies.
 
-DocInsight runs as three processes. Start each in its own terminal:
+> If `wails` isn't on your `PATH` afterwards, add your `GOPATH\bin` to it (the
+> setup script prints the exact path), or invoke it by its full path.
 
-```bash
-# Terminal A — embedding sidecar (required)
-cd backend/embedding-sidecar
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-uvicorn main:app --port 8000
+### Run it
 
-# Terminal B — Go API (auth enabled so the agent works)
-AUTH_ENABLED=true go run ./backend/cmd/server
+```powershell
+# Hot-reload development (recompiles Go + serves the Vite dev frontend in the window)
+wails dev
 
-# Terminal C — Next.js frontend
-npm run dev
+# Production build → a single binary
+wails build      # produces build\bin\docinsight.exe
 ```
 
-Then open **http://localhost:3000**, register a user, and add your LLM API key
-from the agent page's settings to start chatting with your documents.
-
-> **Windows note:** if Go is not on your `PATH`, run backend commands through Git
-> Bash with a prefix:
-> `export PATH="/c/Program Files/Go/bin:$PATH"`.
-
----
-
-## Configuration
-
-The backend is configured via environment variables (sensible defaults shown):
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `AUTH_ENABLED` | `false` | Enforce API-key auth. **Required for the agent.** |
-| `DATABASE_URL` | _(unset)_ | PostgreSQL connection string. SQLite is used if unset. |
-| `OCR_ENABLED` | `false` | Enable Tesseract OCR fallback for sparse-text PDFs. |
-| `TESSERACT_PATH` | _(auto)_ | Path to the `tesseract` binary. |
-| `OCR_MIN_TEXT_RATIO` | `0.02` | Trigger OCR when extracted text falls below this ratio. |
-
-Frontend (`.env.local`):
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` | Base URL of the Go API. |
-
-**Auth model:** the backend issues `di_`-prefixed API keys
-(`Authorization: Bearer di_…`). Your **LLM** key is separate — stored only in the
-browser's `localStorage` and forwarded per request as `X-LLM-API-Key`.
+Launch the binary (or `wails dev`) and the app opens its own window. There is no
+URL to visit and no login: a local user is provisioned automatically on first
+run. To use the agent, open its settings and paste your Anthropic or OpenAI API
+key — it is kept only in this app's local storage and forwarded per request.
 
 ---
 
 ## Testing
 
-```bash
-# Backend (Go) — 233 passing / 0 skipped / 0 failed
-cd backend && go test ./... -count=1
-go vet ./...
+```powershell
+# Go core
+go test ./internal/...
 
-# Frontend unit tests (Vitest) — 14 passing
-npm run test:run
+# Wails binding layer (the app_*.go methods)
+go test .
 
-# Production build (type-checks all routes)
-npx next build
+# Static analysis
+go vet ./internal/... .
+
+# Frontend build + type-check
+cd frontend
+npm run build
+npx tsc --noEmit
 ```
+
+> Frontend unit tests (Vitest) are not yet re-set-up for the new `frontend/`
+> tree — see [`HANDOFF.md`](HANDOFF.md) for status.
 
 ---
 
 ## How the agent works
 
-When you send a message, the Go backend runs a bounded tool-calling loop:
+When you send a message, the Go core runs a bounded tool-calling loop:
 
 1. The user message and tool schemas are streamed to your chosen LLM.
-2. If the model calls a tool, the backend's **dispatcher** executes it
-   (all tenant-scoped to your user), streams a friendly status to the UI, and
+2. If the model calls a tool, the core's **dispatcher** executes it (all
+   tenant-scoped to your local user), emits a friendly status to the UI, and
    feeds the result back to the model.
 3. Tools that return chunks attach **citations**; `summarize_document` issues a
    bounded nested LLM call using your key.
-4. The loop repeats (up to 5 iterations) until the model produces a final answer,
-   whose `<cite chunk="…"/>` markers are resolved into an expandable source list.
+4. The loop repeats (up to 5 iterations) until the model produces a final
+   answer, whose `<cite chunk="…"/>` markers are resolved into an expandable
+   source list.
 
-SSE deltas drive the live UI optimistically; on completion the client refetches
-the authoritative persisted message, so the final state is always correct even if
-streamed events are dropped under backpressure.
+Streaming `agent.delta` events drive the live UI optimistically; on
+`agent.complete` the client refetches the authoritative persisted message, so
+the final state is always correct even if streamed events are dropped under
+backpressure.
 
 ---
 
@@ -252,41 +255,56 @@ streamed events are dropped under backpressure.
 
 ```
 .
-├── src/                          # Next.js frontend (App Router)
-│   ├── app/                      # routes: /, /upload, /search, /agent, ...
-│   ├── components/               # UI: search bar, agent message, mic button, ...
-│   ├── hooks/                    # useSSE, useSpeechRecognition
-│   └── store/                    # Zustand app store
-├── backend/
-│   ├── cmd/server/               # entry point, DI wiring, graceful shutdown
-│   ├── internal/
-│   │   ├── agent/                # LLM tool-calling loop + tool dispatcher
-│   │   ├── handler/              # HTTP handlers (documents, search, agent, auth)
-│   │   ├── store/                # SQLite + Postgres stores, FTS5 + cosine search
-│   │   ├── llm/                  # Anthropic + OpenAI streaming clients
-│   │   ├── chunker/ embedder/    # text chunking + sidecar client
-│   │   ├── worker/ queue/        # job pool + channel queue
-│   │   ├── scraper/ crawler/ ocr/# web ingestion + OCR
-│   │   └── events/               # SSE event broker
-│   └── embedding-sidecar/        # Python FastAPI embedding service
+├── main.go                       # Wails entry point (embeds frontend/dist, binds App)
+├── app.go                        # startup/shutdown, DI wiring, event bridge, local user
+├── app_sidecar.go                # spawn + health-check + stop the Python sidecar
+├── app_documents.go              # bound methods: list/get/delete/move/process/refresh/add
+├── app_ingest.go                 # bound methods: URL ingestion (+ optional crawl)
+├── app_search.go                 # bound methods: hybrid/semantic/keyword search
+├── app_tags.go  app_folders.go   # bound methods: tags + folder CRUD
+├── app_agent.go                  # bound methods: agent sessions/messages
+├── wails.json                    # Wails project config
+├── setup.ps1                     # one-time idempotent setup
+├── internal/                     # Go core (reused unchanged)
+│   ├── agent/                    # LLM tool-calling loop + tool dispatcher
+│   ├── store/                    # modernc SQLite store, FTS5 + cosine + RRF
+│   ├── llm/                      # Anthropic + OpenAI streaming clients
+│   ├── chunker/ embedder/        # text chunking + sidecar client
+│   ├── worker/ queue/            # job pool + channel queue
+│   ├── scraper/ crawler/ ocr/    # web ingestion + OCR
+│   ├── events/                   # in-process event broker
+│   ├── pdf/ model/ config/       # extraction · domain types · config
+├── frontend/
+│   ├── src/pages/                # Dashboard, AddContent, Search, Agent, DocumentDetail
+│   ├── src/components/           # UI: search bar, agent message, mic button, ...
+│   ├── src/hooks/                # use-events (Wails events), use-speech-recognition
+│   ├── src/lib/                  # api.ts (binding adapter), types.ts
+│   └── wailsjs/                  # generated Go bindings + runtime
+├── backend/embedding-sidecar/    # Python FastAPI embedding service
 ├── HANDOFF.md                    # full developer handoff
-└── LESSONS_LEARNED.md            # running log of decisions & gotchas
+├── LESSONS_LEARNED.md            # running log of decisions & gotchas
+└── MIGRATION_LOG.md              # web → desktop conversion log
 ```
 
 For deeper context — what's implemented, conventions, and design rationale — see
-[`HANDOFF.md`](HANDOFF.md) and [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md).
+[`HANDOFF.md`](HANDOFF.md), [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md), and
+[`MIGRATION_LOG.md`](MIGRATION_LOG.md).
 
 ---
 
 ## Privacy
 
-- **Your documents stay on your infrastructure** (local SQLite or your own
-  Postgres).
-- **Your LLM API key is never persisted server-side** — it lives in your
-  browser and is forwarded per request, then dropped.
-- **Voice input is fully client-side** via the Web Speech API. Audio is handled
-  by your browser vendor (e.g. Chrome → Google, Safari → on-device); DocInsight
-  never receives audio bytes.
+- **Your documents never leave your machine.** They are stored locally under
+  `%APPDATA%\DocInsight` (SQLite + an uploads folder).
+- **No server, no account, no telemetry.** DocInsight runs as a single local
+  process. The embedding sidecar is spawned on `127.0.0.1` and is not reachable
+  off-host.
+- **Your LLM API key is never persisted by the core** — it lives in the app's
+  local storage and is forwarded per request to your chosen provider, then
+  dropped. Document text is sent to that provider only when *you* chat with the
+  agent.
+- **Voice input is handled by the WebView2 layer** via the Web Speech API.
+  DocInsight never receives audio bytes.
 
 ---
 
