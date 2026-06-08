@@ -2,26 +2,21 @@ import { create } from "zustand";
 import type { Document, SearchResult } from "@/lib/types";
 
 interface AppState {
-  // Documents
   documents: Document[];
   documentsLoading: boolean;
   totalDocuments: number;
   currentPage: number;
 
-  // Search
   searchQuery: string;
   searchResults: SearchResult[];
   searchLoading: boolean;
   searchTookMs: number;
   selectedDocumentIds: string[];
 
-  // Folders
   selectedFolderId: string | null;
 
-  // UI
   darkMode: boolean;
 
-  // Actions
   setDocuments: (docs: Document[], total: number) => void;
   setDocumentsLoading: (loading: boolean) => void;
   setCurrentPage: (page: number) => void;

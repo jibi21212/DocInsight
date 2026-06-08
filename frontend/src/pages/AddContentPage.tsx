@@ -11,12 +11,10 @@ export default function AddContentPage() {
   const { addDocument } = useAppStore();
   const [activeTab, setActiveTab] = useState<Tab>("pdf");
 
-  // PDF ingestion state
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [addSuccess, setAddSuccess] = useState<string | null>(null);
 
-  // URL ingestion state
   const [urlInput, setUrlInput] = useState("");
   const [ingesting, setIngesting] = useState(false);
   const [ingestError, setIngestError] = useState<string | null>(null);
@@ -95,7 +93,6 @@ export default function AddContentPage() {
         </p>
       </div>
 
-      {/* Tab toggle */}
       <div className="flex rounded-lg border border-neutral-200 bg-neutral-50 p-1 dark:border-neutral-800 dark:bg-neutral-900">
         <button
           onClick={() => setActiveTab("pdf")}
@@ -121,7 +118,6 @@ export default function AddContentPage() {
         </button>
       </div>
 
-      {/* PDF tab */}
       {activeTab === "pdf" && (
         <div className="space-y-4">
           <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-neutral-300 bg-neutral-50 px-6 py-12 text-center dark:border-neutral-700 dark:bg-neutral-900">
@@ -159,7 +155,6 @@ export default function AddContentPage() {
         </div>
       )}
 
-      {/* URL tab */}
       {activeTab === "url" && (
         <div className="space-y-4">
           <div>
@@ -178,7 +173,6 @@ export default function AddContentPage() {
             </p>
           </div>
 
-          {/* Crawl options — shown when single URL is entered */}
           {urlInput.trim().split("\n").filter((u) => u.trim()).length === 1 && (
             <div className="space-y-3 rounded-lg border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-700 dark:bg-neutral-800/50">
               <label className="flex items-center gap-2 text-sm">

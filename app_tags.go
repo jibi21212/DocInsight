@@ -45,7 +45,6 @@ func (a *App) CreateTag(name string, color string) (*model.Tag, error) {
 	return tag, nil
 }
 
-// DeleteTag removes a tag by ID.
 func (a *App) DeleteTag(id string) error {
 	tagID, err := uuid.Parse(id)
 	if err != nil {

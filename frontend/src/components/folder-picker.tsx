@@ -30,7 +30,6 @@ export function FolderPicker({
     const load = async () => {
       setLoading(true);
       try {
-        // BFS through hierarchy
         const result: FlatFolder[] = [];
         const queue: { parent: string | null; depth: number }[] = [
           { parent: null, depth: 0 },

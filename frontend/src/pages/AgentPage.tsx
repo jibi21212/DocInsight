@@ -60,7 +60,6 @@ export default function AgentPage() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [hasKey, setHasKey] = useState(false);
 
-  // New session form
   const [newProvider, setNewProvider] = useState<LLMProvider>("anthropic");
   const [newModel, setNewModel] = useState<string>(MODELS.anthropic[0].value);
   const [newTitle, setNewTitle] = useState("");
@@ -120,7 +119,6 @@ export default function AgentPage() {
       } else if (event.type === "agent.tool_result") {
         const cits = (event.data["citations"] as Citation[]) ?? [];
         setStreamingCitations((prev) => [...prev, ...cits]);
-        // Mark the most recent in-flight tool entry as done.
         setStreamingTools((prev) => {
           for (let i = prev.length - 1; i >= 0; i--) {
             if (!prev[i].done) {
@@ -233,7 +231,6 @@ export default function AgentPage() {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] gap-4">
-      {/* Sessions sidebar */}
       <aside className="flex w-64 shrink-0 flex-col rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
         <div className="flex items-center justify-between border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
           <span className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
@@ -293,7 +290,6 @@ export default function AgentPage() {
         </div>
       </aside>
 
-      {/* Chat area */}
       <div className="flex min-w-0 flex-1 flex-col rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
         {selectedSession ? (
           <>
@@ -416,7 +412,6 @@ export default function AgentPage() {
         )}
       </div>
 
-      {/* Create session modal */}
       {showCreate && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/40"

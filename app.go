@@ -39,10 +39,8 @@ type App struct {
 	dataDir string
 }
 
-// NewApp creates a new App application struct.
 func NewApp() *App { return &App{} }
 
-// startup wires up all dependencies when the Wails runtime is ready.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
@@ -62,7 +60,6 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.cfg = cfg
 
-	// Database (SQLite).
 	db, err := store.NewSQLiteStore(cfg.SQLitePath)
 	if err != nil {
 		slog.Error("failed to open database", "error", err)
@@ -82,7 +79,6 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.emb = embedder.NewHTTPEmbedder(cfg.EmbeddingSidecarURL)
 
-	// Services.
 	ext := pdf.NewLedongthucExtractor()
 	a.scr = scraper.NewReadabilityScraper(cfg.ScraperTimeoutSec, cfg.ScraperUserAgent)
 	var ocrProc *ocr.Processor
@@ -92,7 +88,6 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 
-	// Event broker + background worker pool.
 	a.broker = events.NewBroker()
 	a.queue = queue.NewQueue(cfg.QueueCapacity)
 	processor := worker.NewProcessor(db, ext, a.scr, a.emb, ocrProc, a.broker, a.queue, cfg)
@@ -105,13 +100,11 @@ func (a *App) startup(ctx context.Context) {
 		slog.Error("failed to provision local user", "error", err)
 	}
 
-	// Forward backend events to the frontend via the Wails runtime.
 	go a.forwardEvents()
 
 	slog.Info("DocInsight ready", "dataDir", dataDir)
 }
 
-// shutdown tears everything down cleanly on window close.
 func (a *App) shutdown(ctx context.Context) {
 	if a.pool != nil {
 		a.pool.Shutdown()
@@ -160,7 +153,6 @@ func (a *App) recoverJobs() {
 	}
 }
 
-// ensureLocalUser provisions (once) the single implicit local user and caches its ID.
 func (a *App) ensureLocalUser() error {
 	u, err := a.store.GetUserByEmail(a.ctx, localUserEmail)
 	if err != nil {
@@ -195,5 +187,4 @@ func appDataDir() (string, error) {
 	return dir, nil
 }
 
-// Ping is a trivial connectivity check exposed to the frontend.
 func (a *App) Ping() string { return "ok" }

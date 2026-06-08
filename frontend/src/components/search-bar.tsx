@@ -17,7 +17,7 @@ export function SearchBar({
   const [query, setQuery] = useState(initialQuery);
   const [showFilters, setShowFilters] = useState(false);
   const [topK, setTopK] = useState(10);
-  const [threshold, setThreshold] = useState(0.5);
+  const [threshold, setThreshold] = useState(0.25);
   const [searchMode, setSearchMode] = useState<SearchMode>("hybrid");
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -107,7 +107,7 @@ export function SearchBar({
               step={0.05}
               value={threshold}
               onChange={(e) =>
-                setThreshold(parseFloat(e.target.value) || 0.5)
+                setThreshold(parseFloat(e.target.value) || 0.25)
               }
               className="w-24 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
             />

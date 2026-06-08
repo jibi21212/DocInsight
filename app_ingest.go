@@ -13,8 +13,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// IngestResult is the payload returned by IngestURLs: the created web-source
-// documents (now queued for processing) and a human-readable summary message.
 type IngestResult struct {
 	Documents []model.Document `json:"documents"`
 	Message   string           `json:"message"`
@@ -38,7 +36,6 @@ func (a *App) IngestURLs(urls []string, crawl bool, maxDepth int, maxPages int) 
 		return nil, fmt.Errorf("maximum %d URLs allowed per request", a.cfg.MaxIngestURLs)
 	}
 
-	// Validate all URLs first.
 	for _, rawURL := range urls {
 		parsed, err := url.Parse(rawURL)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -46,7 +43,6 @@ func (a *App) IngestURLs(urls []string, crawl bool, maxDepth int, maxPages int) 
 		}
 	}
 
-	// If crawl mode is enabled with a single URL, discover more URLs first.
 	if crawl && len(urls) == 1 {
 		depth := a.cfg.MaxCrawlDepth
 		if maxDepth > 0 {
@@ -73,7 +69,6 @@ func (a *App) IngestURLs(urls []string, crawl bool, maxDepth int, maxPages int) 
 		}
 	}
 
-	// Ensure upload directory exists.
 	if err := os.MkdirAll(a.cfg.UploadDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create upload directory: %w", err)
 	}
@@ -81,7 +76,6 @@ func (a *App) IngestURLs(urls []string, crawl bool, maxDepth int, maxPages int) 
 	var documents []model.Document
 
 	for _, rawURL := range urls {
-		// Scrape the URL.
 		result, err := a.scr.Scrape(rawURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch %s: %w", rawURL, err)
@@ -89,13 +83,11 @@ func (a *App) IngestURLs(urls []string, crawl bool, maxDepth int, maxPages int) 
 
 		docID := uuid.New()
 
-		// Save raw HTML to disk.
 		htmlPath := filepath.Join(a.cfg.UploadDir, docID.String()+".html")
 		if err := os.WriteFile(htmlPath, result.RawHTML, 0o644); err != nil {
 			return nil, fmt.Errorf("failed to save web content: %w", err)
 		}
 
-		// Determine name.
 		name := result.Title
 		if name == "" {
 			parsed, _ := url.Parse(rawURL)
@@ -119,7 +111,6 @@ func (a *App) IngestURLs(urls []string, crawl bool, maxDepth int, maxPages int) 
 			return nil, fmt.Errorf("database error: %w", err)
 		}
 
-		// Mark as processing and enqueue.
 		if err := a.store.UpdateDocumentStatus(a.ctx, docID, model.StatusProcessing, nil); err != nil {
 			return nil, fmt.Errorf("failed to update status: %w", err)
 		}

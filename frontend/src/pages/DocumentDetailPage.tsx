@@ -107,7 +107,6 @@ export default function DocumentDetailPage() {
         Back to Dashboard
       </Link>
 
-      {/* Document Header */}
       <div className="rounded-xl border border-neutral-200 bg-white p-6 dark:border-neutral-800 dark:bg-neutral-900">
         <div className="flex items-start gap-4">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
@@ -159,7 +158,6 @@ export default function DocumentDetailPage() {
         )}
       </div>
 
-      {/* Chunks */}
       {chunks.length > 0 && (
         <section>
           <h2 className="mb-4 text-lg font-semibold text-neutral-900 dark:text-white">

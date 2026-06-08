@@ -64,7 +64,7 @@ func Load() *Config {
 		ChunkOverlap: envOrDefaultInt("CHUNK_OVERLAP", 200),
 
 		SearchTopK:          envOrDefaultInt("SEARCH_TOP_K", 10),
-		SimilarityThreshold: envOrDefaultFloat("SIMILARITY_THRESHOLD", 0.5),
+		SimilarityThreshold: envOrDefaultFloat("SIMILARITY_THRESHOLD", 0.25),
 
 		ScraperTimeoutSec: envOrDefaultInt("SCRAPER_TIMEOUT_SEC", 30),
 		ScraperUserAgent:  envOrDefault("SCRAPER_USER_AGENT", "DocInsight/1.0"),

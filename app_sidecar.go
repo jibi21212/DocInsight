@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// sidecarProcess is the spawned Python embedding service.
 type sidecarProcess struct {
 	cmd *exec.Cmd
 	url string
@@ -91,7 +90,6 @@ func venvPython(dir string) string {
 	return ""
 }
 
-// freePort asks the OS for an unused localhost TCP port.
 func freePort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -118,7 +116,6 @@ func waitHealthy(url string, timeout time.Duration) error {
 	return fmt.Errorf("sidecar did not become healthy within %s", timeout)
 }
 
-// stop terminates the sidecar process.
 func (s *sidecarProcess) stop() {
 	if s != nil && s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()

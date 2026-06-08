@@ -66,8 +66,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.SearchTopK != 10 {
 		t.Errorf("SearchTopK = %d, want 10", cfg.SearchTopK)
 	}
-	if cfg.SimilarityThreshold != 0.5 {
-		t.Errorf("SimilarityThreshold = %f, want 0.5", cfg.SimilarityThreshold)
+	if cfg.SimilarityThreshold != 0.25 {
+		t.Errorf("SimilarityThreshold = %f, want 0.25", cfg.SimilarityThreshold)
 	}
 }
 

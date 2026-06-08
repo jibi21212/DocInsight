@@ -88,7 +88,6 @@ func (a *App) DeleteAgentSession(id string) error {
 	return nil
 }
 
-// ListAgentMessages returns the chat history of a session owned by the local user.
 func (a *App) ListAgentMessages(sessionID string) ([]model.AgentMessage, error) {
 	id, err := uuid.Parse(sessionID)
 	if err != nil {

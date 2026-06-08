@@ -19,7 +19,6 @@ type SearchResponse struct {
 	TookMs  int64                `json:"took_ms"`
 }
 
-// searchSnippetWindow is the number of characters in a result snippet window.
 const searchSnippetWindow = 240
 
 // Search runs a semantic, keyword, or hybrid search over the user's indexed
@@ -69,6 +68,13 @@ func (a *App) Search(query string, topK int, threshold float64, searchMode strin
 			return nil, fmt.Errorf("failed to generate query embedding: %w", embErr)
 		}
 		results, err = a.store.MatchEmbeddings(a.ctx, queryEmb, threshold, topK, nil, a.userID, folderUUID)
+		// Semantic-only should rank, not gate. If nothing cleared the similarity
+		// threshold, fall back to the top-K closest chunks so the mode never comes
+		// back empty — the threshold then behaves as an optional minimum-confidence
+		// filter rather than an all-or-nothing cutoff.
+		if err == nil && len(results) == 0 {
+			results, err = a.store.MatchEmbeddings(a.ctx, queryEmb, 0, topK, nil, a.userID, folderUUID)
+		}
 		for i := range results {
 			results[i].MatchType = "semantic"
 		}
@@ -190,7 +196,6 @@ func extractSnippet(content, query string, windowSize int) (string, []string) {
 	}
 
 	if len(content) <= windowSize {
-		// Short content: return whole thing, no ellipsis.
 		return content, tokens
 	}
 
@@ -198,11 +203,9 @@ func extractSnippet(content, query string, windowSize int) (string, []string) {
 	matchOffset := findEarliestSearchMatch(lower, tokens)
 
 	if matchOffset < 0 {
-		// Fallback: leading slice with trailing ellipsis (content > windowSize here).
 		return content[:windowSize] + "…", tokens
 	}
 
-	// Center the window: start 50 chars before the match.
 	const lead = 50
 	start := matchOffset - lead
 	if start < 0 {

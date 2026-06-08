@@ -12,20 +12,17 @@ import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// DocumentsPage is a single page of documents with the total count.
 type DocumentsPage struct {
 	Data  []model.Document `json:"data"`
 	Total int              `json:"total"`
 }
 
-// DocumentDetail is a single document together with its chunks.
 type DocumentDetail struct {
 	Document   *model.Document `json:"document"`
 	Chunks     []model.Chunk   `json:"chunks"`
 	ChunkCount int             `json:"chunkCount"`
 }
 
-// AddDocumentsResult holds the documents created by an AddDocuments upload.
 type AddDocumentsResult struct {
 	Documents []model.Document `json:"documents"`
 }
@@ -159,12 +156,10 @@ func (a *App) ProcessDocument(id string) error {
 		return fmt.Errorf("document is already being processed")
 	}
 
-	// Mark as processing before enqueuing.
 	if err := a.store.UpdateDocumentStatus(a.ctx, docID, model.StatusProcessing, nil); err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
 	}
 
-	// Enqueue job; revert status if the queue is full.
 	job := queue.NewProcessJob(docID, a.cfg.MaxRetries)
 	if err := a.queue.Enqueue(job); err != nil {
 		_ = a.store.UpdateDocumentStatus(a.ctx, docID, model.StatusPending, nil)
@@ -200,13 +195,11 @@ func (a *App) RefreshDocument(id string) (*model.Document, error) {
 		return nil, fmt.Errorf("document is currently being processed")
 	}
 
-	// Re-scrape the URL.
 	result, err := a.scr.Scrape(*doc.SourceURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to re-fetch URL: %w", err)
 	}
 
-	// Overwrite the HTML file on disk.
 	if err := os.WriteFile(doc.FilePath, result.RawHTML, 0o644); err != nil {
 		return nil, fmt.Errorf("failed to save updated content: %w", err)
 	}
@@ -216,12 +209,10 @@ func (a *App) RefreshDocument(id string) (*model.Document, error) {
 		slog.Error("failed to delete old chunks during refresh", "error", err)
 	}
 
-	// Update the document name if the title changed.
 	if result.Title != "" && result.Title != doc.Name {
 		doc.Name = result.Title
 	}
 
-	// Reset status and enqueue for re-processing.
 	if err := a.store.UpdateDocumentStatus(a.ctx, docID, model.StatusProcessing, nil); err != nil {
 		return nil, fmt.Errorf("failed to update status: %w", err)
 	}
@@ -257,11 +248,9 @@ func (a *App) AddDocuments() (*AddDocumentsResult, error) {
 
 	result := &AddDocumentsResult{Documents: []model.Document{}}
 	if len(paths) == 0 {
-		// User cancelled — nothing to do.
 		return result, nil
 	}
 
-	// Ensure upload directory exists (mirrors Upload).
 	if err := os.MkdirAll(a.cfg.UploadDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create upload directory: %w", err)
 	}
@@ -301,7 +290,6 @@ func (a *App) AddDocuments() (*AddDocumentsResult, error) {
 			return nil, fmt.Errorf("database error: %w", err)
 		}
 
-		// Enqueue processing for the newly added document.
 		job := queue.NewProcessJob(documentID, a.cfg.MaxRetries)
 		if err := a.queue.Enqueue(job); err != nil {
 			return nil, fmt.Errorf("processing queue is full, try again later")

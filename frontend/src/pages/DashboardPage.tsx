@@ -52,7 +52,6 @@ export default function DashboardPage() {
     loadDocuments();
   }, [loadDocuments]);
 
-  // Poll for status updates on processing documents
   useEffect(() => {
     const hasProcessing = documents.some(
       (d) => d.status === "processing" || processingIds.has(d.id)
@@ -135,7 +134,6 @@ export default function DashboardPage() {
         />
       </aside>
       <div className="min-w-0 flex-1 space-y-8">
-      {/* Stats */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
           <div className="flex items-center gap-3">
@@ -190,7 +188,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Search */}
       <section>
         <h2 className="mb-4 text-lg font-semibold text-neutral-900 dark:text-white">
           Semantic Search
@@ -228,7 +225,6 @@ export default function DashboardPage() {
         )}
       </section>
 
-      {/* Recent Documents */}
       <section>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-neutral-900 dark:text-white">

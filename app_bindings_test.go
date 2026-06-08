@@ -35,7 +35,6 @@ func newTestApp(t *testing.T) *App {
 func TestBindings_StoreBackedRoundTrips(t *testing.T) {
 	a := newTestApp(t)
 
-	// Folders
 	if f, err := a.CreateFolder("Research", ""); err != nil || f == nil {
 		t.Fatalf("CreateFolder: f=%v err=%v", f, err)
 	}
@@ -44,7 +43,6 @@ func TestBindings_StoreBackedRoundTrips(t *testing.T) {
 		t.Fatalf("ListFolders: n=%d err=%v", len(folders), err)
 	}
 
-	// Tags
 	if _, err := a.CreateTag("important", "#ef4444"); err != nil {
 		t.Fatalf("CreateTag: %v", err)
 	}
@@ -52,7 +50,6 @@ func TestBindings_StoreBackedRoundTrips(t *testing.T) {
 		t.Fatalf("ListTags: n=%d err=%v", len(tags), err)
 	}
 
-	// Documents (empty library)
 	page, err := a.ListDocuments(1, 20, "")
 	if err != nil {
 		t.Fatalf("ListDocuments: %v", err)
@@ -61,7 +58,6 @@ func TestBindings_StoreBackedRoundTrips(t *testing.T) {
 		t.Fatalf("expected empty library, got total=%d len=%d", page.Total, len(page.Data))
 	}
 
-	// Agent sessions
 	if _, err := a.CreateAgentSession("anthropic", "claude-sonnet-4-6", "Chat", ""); err != nil {
 		t.Fatalf("CreateAgentSession: %v", err)
 	}

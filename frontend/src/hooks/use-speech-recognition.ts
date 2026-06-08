@@ -69,7 +69,6 @@ export function useSpeechRecognition(
   const [interimTranscript, setInterimTranscript] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Resolve the constructor once on mount.
   useEffect(() => {
     const found = resolveCtor();
     Ctor.current = found;
