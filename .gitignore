@@ -101,3 +101,11 @@ docinsight.db-wal
 docinsight.db-shm
 backend/docinsight.db
 backend-server.exe
+
+# ========================
+# Local-only Claude / agent meta (kept on disk, never committed)
+# ========================
+.claude/
+/CLAUDE.md
+/AGENTS.md
+/MIGRATION_LOG.md
